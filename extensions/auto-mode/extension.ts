@@ -649,8 +649,14 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       updateUi(ctx);
     });
 
+    // Emit stale-pending only when the open set changed since the last emit,
+    // so a long-lived pending item does not re-notify after every turn.
+    let lastStalePendingKey = "";
     pi.on("agent_settled", () => {
       const open = openPending(state.pending ?? []);
+      const key = open.map((p) => p.id).join(",");
+      if (key === lastStalePendingKey) return;
+      lastStalePendingKey = key;
       if (open.length === 0) return;
       emitIssue(pi.events, {
         severity: "warning",
