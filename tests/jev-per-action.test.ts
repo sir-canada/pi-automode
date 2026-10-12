@@ -311,3 +311,19 @@ for (const [mode, s, expectBlock, expectLlm] of [
 		assert.equal(h.llm, expectLlm);
 	});
 }
+
+for (const [mode, expectBlock, expectLlm] of [["gate", false, 1], ["gate+block", false, 1], ["replace", true, 0]] as const) {
+	test(`hook: open breaker (unavailable) in ${mode} follows the mode failure policy`, async () => {
+		const h = await setup({ mode, decide: async () => { throw new JevError("unavailable", "circuit open"); } });
+		const r = await h.run("echo hi");
+		assert.equal(r?.block === true, expectBlock);
+		assert.equal(h.llm, expectLlm);
+	});
+}
+
+test("hook: truncated state in gate mode is never auto-allowed (goes to LLM)", async () => {
+	const h = await setup({ mode: "gate", decide: async () => ({ answers: answers(0.1, 0.1) }) });
+	const r = await h.run("echo " + "x".repeat(200_000));
+	assert.equal(r?.block, undefined);
+	assert.equal(h.llm, 1);
+});
