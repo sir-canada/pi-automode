@@ -124,12 +124,13 @@ test("allow-tier scope_creep: low allows, high escalates, read-only skipped", as
 test("allow-tier: Jev failure fails open, is counted and recorded", async () => {
 	resetAllowTierFailures();
 	const issues: unknown[] = [];
-	setIssueRecorder((i) => issues.push(i));
 	try {
 		const h = await setup({
 			mode: "replace", config: { permissionAllow: [parseToolPattern("bash(echo *)")!] },
 			decide: async () => { throw new JevError("timeout", "timed out"); },
 		});
+		// session_start installs the extension's issue recorder; override after it.
+		setIssueRecorder((i) => issues.push(i));
 		assert.equal((await h.emit("bash", { command: "echo hi" }))?.block, undefined);
 		assert.equal(allowTierFailureCount(), 1);
 		assert.equal(issues.length, 1);
