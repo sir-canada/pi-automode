@@ -68,7 +68,12 @@ import {
   statusLine,
   statusText,
 } from "./state.ts";
-import { loadedContextFromSystemPromptOptions } from "./transcript.ts";
+import {
+  buildClassifierTranscript,
+  loadedContextFromSystemPromptOptions,
+} from "./transcript.ts";
+import { runPerActionDecision } from "./decision-model.ts";
+import { logJevCall } from "./log.ts";
 import type {
   AutoModeState,
   ClassifierReasoningLog,
@@ -235,6 +240,8 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       recentDenials: [],
     };
     let loadedContext = "";
+    let lastUserAsk = "";
+    const recentActions: string[] = [];
     let globalConfigNoticeShown = false;
     let decisionModelClient: JevClient | undefined;
     // Parent-state inheritance: internal, read-only, synchronous query.
@@ -495,6 +502,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       loadedContext = loadedContextFromSystemPromptOptions(
         event.systemPromptOptions,
       );
+      lastUserAsk = typeof event.prompt === "string" ? event.prompt : "";
       return { systemPrompt: `${event.systemPrompt}\n\n${AUTO_MODE_GUIDANCE}` };
     });
 
@@ -808,6 +816,83 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         );
       }
 
+      const priorActions = recentActions.slice(-3);
+      recentActions.push(`${event.toolName}: ${summary}`);
+      if (recentActions.length > 3) recentActions.shift();
+      let jevOutcome: Awaited<ReturnType<typeof runPerActionDecision>> | undefined;
+      if (cfg.decisionModel?.enabled && decisionModelClient) {
+        const settings = cfg.decisionModel;
+        let insideCwd: boolean | undefined;
+        if (PATH_BEARING_TOOLS.has(event.toolName)) {
+          const inputPath = extractInputPath(event.toolName, input);
+          if (inputPath !== undefined) {
+            const resolved =
+              resolveToolInputPath(event.toolName, ctx.cwd, inputPath) ??
+                inputPath;
+            const policyPath = resolvePathForPolicy(resolved) ?? resolved;
+            insideCwd = isInside(
+              policyPath,
+              resolvePathForPolicy(ctx.cwd) ?? ctx.cwd,
+            );
+          }
+        }
+        let transcript = "";
+        try {
+          transcript = buildClassifierTranscript(ctx, {
+            maxUserTokens: cfg.maxUserTranscriptTokens,
+            maxToolTokens: cfg.maxToolTranscriptTokens,
+          });
+        } catch {
+          transcript = "";
+        }
+        jevOutcome = await runPerActionDecision(decisionModelClient, settings, {
+          userAsk: lastUserAsk,
+          grants: [],
+          action: { toolName: event.toolName, input, cwd: ctx.cwd, insideCwd },
+          recentActions: priorActions,
+          transcript,
+          projectInstructions: loadedContext,
+          policy: {
+            environment: cfg.environment,
+            allow: cfg.allow,
+            softDeny: cfg.softDeny,
+            hardDeny: cfg.hardDeny,
+          },
+        }, ctx.signal);
+        const jevLog = {
+          decisionId: logCtx.decisionId,
+          stage: "per_action" as const,
+          state: jevOutcome.state.text,
+          answers: jevOutcome.answers,
+          decision: jevOutcome.result,
+          durationMs: jevOutcome.durationMs,
+          reportedModel: jevOutcome.reportedModel,
+          ok: jevOutcome.ok,
+          ...(jevOutcome.error ? { error: jevOutcome.error } : {}),
+        };
+        if (jevOutcome.result !== "llm") logJevCall(logCtx.logger, jevLog);
+        if (jevOutcome.result === "allow") {
+          return allow(
+            ctx,
+            "classifier",
+            jevOutcome.reason,
+            event.toolName,
+            summary,
+            logCtx,
+          );
+        }
+        if (jevOutcome.result === "block") {
+          return block(ctx, {
+            timestamp: Date.now(),
+            toolName: event.toolName,
+            reason: jevOutcome.reason,
+            action: summary,
+            kind: "classifier",
+          }, logCtx);
+        }
+        jevOutcome = Object.assign(jevOutcome, { pendingLog: jevLog });
+      }
+
       const decision = await classify(
         ctx,
         cfg,
@@ -815,6 +900,16 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         loadedContext,
       );
       logClassifierIo(decision, logCtx);
+      if (jevOutcome) {
+        const pending = (jevOutcome as { pendingLog?: Parameters<typeof logJevCall>[1] })
+          .pendingLog;
+        if (pending) {
+          logJevCall(logCtx.logger, {
+            ...pending,
+            decision: `llm:${decision.decision}`,
+          });
+        }
+      }
       if (decision.decision === "allow") {
         state.classifierAllowed += 1;
         return allow(

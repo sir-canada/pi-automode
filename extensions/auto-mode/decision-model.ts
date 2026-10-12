@@ -12,7 +12,7 @@ import {
   PROBE_QUESTIONS,
   PROBE_STATE,
 } from "./constants.ts";
-import { hasOwn } from "./utils.ts";
+import { hasOwn, truncateMiddle } from "./utils.ts";
 
 // ---------------------------------------------------------------------------
 // Config shape
@@ -909,4 +909,331 @@ export function createDecisionModelClient(
       return reportedModel;
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Per-action questions, state assembly, threshold bands (plan §1.3/§1.7/§1.9)
+// ---------------------------------------------------------------------------
+
+export const RISK_QUESTION_NAMES = ["destructive", "scope_creep"] as const;
+export type RiskQuestionName = (typeof RISK_QUESTION_NAMES)[number];
+
+/**
+ * The two per-action risk questions. A configured override wins; a missing
+ * or non-`noul` override falls back to the built-in so neither risk check can
+ * be dropped by configuration.
+ */
+export function buildPerActionQuestions(
+  settings: DecisionModelSettings,
+): JevQuestionMap {
+  const questions: JevQuestionMap = {};
+  for (const name of RISK_QUESTION_NAMES) {
+    const configured = settings.questions[name];
+    questions[name] = configured?.type === "noul"
+      ? configured
+      : DEFAULT_DECISION_MODEL_QUESTIONS[name]!;
+  }
+  return questions;
+}
+
+/** Approximate token budget for state + questions (of Jev's 32K window). */
+export const JEV_STATE_TOKEN_BUDGET = 24_000;
+const JEV_CHARS_PER_TOKEN = 4;
+
+export const JEV_ROLE = [
+  "You are Jev, the decision model for pi-automode, a guardrail that reviews one proposed coding-agent tool call before it runs.",
+  "Answer each question about the proposed action in <action> only, using the user's request in <user_ask>, any grants in <grants>, the recent context, and the policy.",
+  "Follow each question's numbered rubric exactly. When the context is insufficient, follow the rubric's 'if unsure' rule.",
+].join("\n");
+
+export type JevActionContext = {
+  toolName: string;
+  input: unknown;
+  cwd: string;
+  /** undefined when the action has no single target path (e.g. bash). */
+  insideCwd: boolean | undefined;
+};
+
+export type JevPolicy = {
+  environment: string[];
+  allow: string[];
+  softDeny: string[];
+  hardDeny: string[];
+};
+
+export type JevStateInput = {
+  userAsk: string;
+  grants: string[];
+  action: JevActionContext;
+  recentActions: string[];
+  transcript: string;
+  projectInstructions: string;
+  policy: JevPolicy;
+  /** Questions sent alongside the state; counted against the budget, never truncated. */
+  questions: JevQuestionMap;
+  budgetTokens?: number;
+};
+
+export type JevState = {
+  text: string;
+  /** True when anything was cut or the fixed sections exceed the budget. Never auto-allowed. */
+  truncated: boolean;
+  approxTokens: number;
+};
+
+function approxTokens(text: string): number {
+  return Math.ceil(text.length / JEV_CHARS_PER_TOKEN);
+}
+
+function stateSection(name: string, body: string): string {
+  return `<${name}>\n${body}\n</${name}>`;
+}
+
+function bulletLines(items: readonly string[], empty = "(none)"): string {
+  return items.length > 0 ? items.map((item) => `- ${item}`).join("\n") : empty;
+}
+
+function cutText(text: string, maxChars: number, label: string): string {
+  if (text.length <= maxChars) return text;
+  const marker = `[${label} truncated]`;
+  if (maxChars <= marker.length + 40) return marker;
+  return truncateMiddle(text, maxChars);
+}
+
+/**
+ * Build Jev's labelled `state`. Truncation order: transcript middle first,
+ * then project instructions. role, user_ask, grants, action, recent_actions,
+ * policy and the question rubrics are never truncated.
+ */
+export function assembleJevState(input: JevStateInput): JevState {
+  const budget = input.budgetTokens ?? JEV_STATE_TOKEN_BUDGET;
+  const action = input.action;
+  const inside = action.insideCwd === undefined
+    ? "unknown"
+    : action.insideCwd
+    ? "yes"
+    : "no";
+  const outside = action.insideCwd === undefined
+    ? "unknown"
+    : action.insideCwd
+    ? "no"
+    : "yes";
+  const actionBody = [
+    `tool: ${action.toolName}`,
+    `input: ${JSON.stringify(action.input)}`,
+    `cwd: ${action.cwd}`,
+    `inside_cwd: ${inside}`,
+    `outside_cwd: ${outside}`,
+  ].join("\n");
+  const policyBody = [
+    "environment:",
+    bulletLines(input.policy.environment),
+    "allow:",
+    bulletLines(input.policy.allow),
+    "soft_deny:",
+    bulletLines(input.policy.softDeny),
+    "hard_deny:",
+    bulletLines(input.policy.hardDeny),
+  ].join("\n");
+  const head = [
+    stateSection("role", JEV_ROLE),
+    stateSection("user_ask", input.userAsk || "(none)"),
+    stateSection("grants", bulletLines(input.grants)),
+    stateSection("action", actionBody),
+    stateSection(
+      "recent_actions",
+      bulletLines(input.recentActions.slice(-3).map((line) => line.replace(/\s+/g, " "))),
+    ),
+  ];
+  const policy = stateSection("policy", policyBody);
+  const fixedTokens = approxTokens(head.join("\n\n") + policy) +
+    approxTokens(JSON.stringify(input.questions)) + 64;
+  const available = Math.max(0, budget - fixedTokens) * JEV_CHARS_PER_TOKEN;
+  let truncated = fixedTokens > budget;
+  let transcript = input.transcript || "(none)";
+  let instructions = input.projectInstructions || "(none)";
+  if (transcript.length + instructions.length > available) {
+    truncated = true;
+    transcript = cutText(
+      transcript,
+      Math.max(0, available - instructions.length),
+      "transcript",
+    );
+    if (transcript.length + instructions.length > available) {
+      instructions = cutText(
+        instructions,
+        Math.max(0, available - transcript.length),
+        "project instructions",
+      );
+    }
+  }
+  const text = [
+    ...head,
+    stateSection("transcript", transcript),
+    stateSection("project_instructions", instructions),
+    policy,
+  ].join("\n\n");
+  return { text, truncated, approxTokens: approxTokens(text) };
+}
+
+export type RiskBand = "allow" | "middle" | "block";
+
+/** allow when score <= allow, block when score >= block (block wins on overlap). */
+export function riskBand(score: number, band: DecisionModelBand): RiskBand {
+  if (score >= band.block) return "block";
+  if (score <= band.allow) return "allow";
+  return "middle";
+}
+
+export type RiskEvaluation = {
+  band: RiskBand;
+  question: RiskQuestionName;
+  score: number;
+  scores: Record<RiskQuestionName, number>;
+};
+
+const BAND_RANK: Record<RiskBand, number> = { allow: 0, middle: 1, block: 2 };
+
+/**
+ * Evaluate both risk answers; the riskier one decides. A missing or
+ * non-`noul` answer is a shape failure (handled by the mode failure policy).
+ */
+export function evaluateRiskAnswers(
+  answers: JevAnswerMap,
+  thresholds: DecisionModelThresholds,
+): RiskEvaluation {
+  const scores = {} as Record<RiskQuestionName, number>;
+  let worst: RiskEvaluation | undefined;
+  for (const name of RISK_QUESTION_NAMES) {
+    const answer = answers[name];
+    if (!answer || answer.type !== "noul") {
+      throw new JevError(
+        "shape",
+        `decision model answer ${name} is missing or not a noul`,
+      );
+    }
+    scores[name] = answer.value;
+    const band = riskBand(answer.value, thresholds[name]);
+    if (
+      !worst || BAND_RANK[band] > BAND_RANK[worst.band] ||
+      (BAND_RANK[band] === BAND_RANK[worst.band] && answer.value > worst.score)
+    ) {
+      worst = { band, question: name, score: answer.value, scores };
+    }
+  }
+  return worst!;
+}
+
+export type PerActionResult = "allow" | "block" | "llm";
+export type PerActionDecision = { result: PerActionResult; reason: string };
+
+/** Map a risk evaluation onto the configured mode (plan §1.1, §1.7). */
+export function decidePerAction(
+  mode: DecisionModelMode,
+  evaluation: RiskEvaluation,
+  truncated: boolean,
+): PerActionDecision {
+  // Step 3 hook: a covered_by_grant answer >= its allow threshold will
+  // override mid/high risk here (plan §1.5).
+  const score = `${evaluation.question} ${evaluation.score.toFixed(2)}`;
+  const autoAllow = evaluation.band === "allow" && !truncated;
+  const allowReason =
+    `Decision model: destructive ${evaluation.scores.destructive.toFixed(2)}, scope_creep ${
+      evaluation.scores.scope_creep.toFixed(2)
+    } within allow thresholds`;
+  const llm = {
+    result: "llm" as const,
+    reason: truncated
+      ? "Decision model state truncated; LLM review required"
+      : `Decision model: ${score}; LLM review required`,
+  };
+  if (mode === "gate") {
+    return autoAllow ? { result: "allow", reason: allowReason } : llm;
+  }
+  if (evaluation.band === "block") {
+    return {
+      result: "block",
+      reason: `Decision model: ${score}, not covered by any grant`,
+    };
+  }
+  if (mode === "gate+block") {
+    return autoAllow ? { result: "allow", reason: allowReason } : llm;
+  }
+  if (evaluation.band === "middle") {
+    return {
+      result: "block",
+      reason: `Decision model: ${score} exceeded the replace-mode limits, not covered by any grant`,
+    };
+  }
+  if (truncated) {
+    return {
+      result: "block",
+      reason: "Decision model: state was truncated; replace mode cannot allow it",
+    };
+  }
+  return { result: "allow", reason: allowReason };
+}
+
+/** Per-action failure policy (plan §1.11): LLM in gate modes, block in replace. */
+export function decisionModelFailure(
+  mode: DecisionModelMode,
+  error: unknown,
+): PerActionDecision {
+  if (mode === "replace") {
+    return {
+      result: "block",
+      reason: `Decision model unavailable in replace mode: ${messageOf(error)}`,
+    };
+  }
+  return {
+    result: "llm",
+    reason: `Decision model unavailable: ${messageOf(error)}`,
+  };
+}
+
+export type PerActionOutcome = PerActionDecision & {
+  state: JevState;
+  answers: JevAnswerMap;
+  durationMs: number;
+  reportedModel: string;
+  ok: boolean;
+  error?: string;
+};
+
+/** One Jev round trip for an action that would otherwise reach the classifier. */
+export async function runPerActionDecision(
+  client: JevClient,
+  settings: DecisionModelSettings,
+  stateInput: Omit<JevStateInput, "questions">,
+  signal?: AbortSignal,
+): Promise<PerActionOutcome> {
+  const questions = buildPerActionQuestions(settings);
+  const state = assembleJevState({ ...stateInput, questions });
+  const startedAt = Date.now();
+  try {
+    const result = await client.decide(
+      state.text,
+      questions,
+      signal ? { signal } : undefined,
+    );
+    const evaluation = evaluateRiskAnswers(result.answers, settings.thresholds);
+    return {
+      ...decidePerAction(settings.mode, evaluation, state.truncated),
+      state,
+      answers: result.answers,
+      durationMs: result.durationMs,
+      reportedModel: result.reportedModel,
+      ok: true,
+    };
+  } catch (error) {
+    return {
+      ...decisionModelFailure(settings.mode, error),
+      state,
+      answers: {},
+      durationMs: Date.now() - startedAt,
+      reportedModel: client.reportedModel ?? "",
+      ok: false,
+      error: messageOf(error),
+    };
+  }
 }
