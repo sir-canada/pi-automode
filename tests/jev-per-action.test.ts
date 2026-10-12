@@ -79,7 +79,9 @@ async function setup(opts: {
 		fake.emit("tool_call", { type: "tool_call", toolName: "bash", input: { command } }, ctx) as Promise<
 			{ block?: boolean; reason?: string } | undefined
 		>;
-	return { run, jev, get llm() { return llm; } };
+	const runTool = (toolName: string, input: Record<string, unknown>) =>
+		fake.emit("tool_call", { type: "tool_call", toolName, input }, ctx) as Promise<{ block?: boolean; reason?: string } | undefined>;
+	return { run, runTool, jev, get llm() { return llm; } };
 }
 
 test("riskBand boundaries", () => {
@@ -251,4 +253,27 @@ for (const mode of ["gate", "gate+block", "replace"] as const) {
 		assert.equal(r?.block, undefined);
 		assert.equal(h.llm, mode === "replace" ? 0 : 1);
 	});
+}
+
+// No-bypass invariant: an accepted ask never skips deterministic denials, and Jev is never called.
+const NO_BYPASS: Array<{ name: string; ask: string; config?: Record<string, unknown>; tool: string; input: Record<string, unknown> }> = [
+	{ name: "permissions.deny", ask: "bash", config: { permissionDeny: [parseToolPattern("bash(rm *)")!] }, tool: "bash", input: { command: "rm -rf foo" } },
+	{ name: "hard-deny shell profile", ask: "bash", tool: "bash", input: { command: "echo x >> ~/.bashrc" } },
+	{ name: "protected safety-control file", ask: "write", tool: "write", input: { path: ".pi/automode.local.json", content: "{}" } },
+];
+for (const mode of ["gate", "gate+block", "replace"] as const) {
+	for (const c of NO_BYPASS) {
+		test(`hook no-bypass (${mode}): accepted ask + ${c.name} blocks with zero Jev/LLM calls`, async () => {
+			const h = await setup({
+				mode,
+				decide: async () => { throw new Error("Jev must not be called"); },
+				config: { permissionAsk: [parseToolPattern(c.ask)!], ...(c.config ?? {}) },
+			});
+			const fake = h as unknown as { run: (cmd?: string) => Promise<{ block?: boolean } | undefined> };
+			const r = c.tool === "bash" ? await fake.run(c.input.command as string) : await (h as any).runTool?.(c.tool, c.input);
+			assert.equal(r?.block, true);
+			assert.equal(h.jev.n, 0);
+			assert.equal(h.llm, 0);
+		});
+	}
 }
