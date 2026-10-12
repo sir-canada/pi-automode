@@ -89,7 +89,7 @@ test("gate-mode Jev failure emits failure but never a fallback kind", async () =
 	assert.deepEqual(kinds, ["failure"]);
 	assert.equal(h.events[0].data.severity, "error");
 	assert.match(h.events[0].data.body, /endpoint down/);
-	assert.ok(!kinds.includes("fallback") && !kinds.includes("preflight-dialog"));
+	// The LLM fallback itself (kind 4) must add no event: exactly one, the failure.
 });
 
 test("config diagnostics emit a config error at load", async () => {
