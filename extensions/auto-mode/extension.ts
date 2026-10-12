@@ -11,6 +11,7 @@ import { Type } from "typebox";
 import {
   classifierReasoningForConfig,
   defaultClassifyAction,
+  resolveClassifier,
   serializeClassifierAction,
 } from "./classifier.ts";
 import { analyzeBash, type BashAnalysis } from "./bash.ts";
@@ -80,6 +81,13 @@ import {
   runGrantAwareDecision,
 } from "./grants.ts";
 import { logJevCall } from "./log.ts";
+import {
+  buildDraftUserMessage,
+  DRAFT_SYSTEM_PROMPT,
+  lastAssistantText,
+  runPreflight,
+  type DraftFn,
+} from "./preflight.ts";
 import type {
   AutoModeState,
   ClassifierReasoningLog,
@@ -149,7 +157,37 @@ export type PiAutomodeOptions = {
   analyzeBash?: typeof analyzeBash;
   /** Override the decision-model (Jev) client in tests so unit tests never hit the network. */
   createDecisionModelClient?: (settings: DecisionModelSettings) => JevClient;
+  /** Override the preflight scope drafter in tests. */
+  draftScope?: DraftFn;
 };
+
+function createDraftFn(ctx: ExtensionContext, cfg: EffectiveConfig): DraftFn {
+  return async (input, signal) => {
+    const resolution = await resolveClassifier(ctx, cfg);
+    if (!resolution.classifier || !resolution.completionPlan) {
+      throw new Error("no classifier model available for drafting");
+    }
+    const c = resolution.classifier;
+    const message = await resolution.completionPlan.completeFn(c.model, {
+      systemPrompt: DRAFT_SYSTEM_PROMPT,
+      messages: [{
+        role: "user",
+        content: [{ type: "text", text: buildDraftUserMessage(input) }],
+        timestamp: Date.now(),
+      }],
+    }, {
+      apiKey: c.apiKey,
+      headers: c.headers,
+      env: c.env,
+      signal,
+      maxTokens: 400,
+    });
+    return (message.content ?? [])
+      .filter((part) => part.type === "text")
+      .map((part) => (part as { text: string }).text)
+      .join("\n");
+  };
+}
 
 type LogCtx = {
   logger: Logger;
@@ -557,7 +595,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       unsubscribeEnabledQuery = undefined;
     });
 
-    pi.on("before_agent_start", (event) => {
+    pi.on("before_agent_start", async (event, ctx) => {
       const cfg = effectiveConfig();
       if (!cfg.enabled) return undefined;
       loadedContext = loadedContextFromSystemPromptOptions(
@@ -568,7 +606,73 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         state.grants = clearTaskGrants(state.grants);
         persist();
       }
-      return { systemPrompt: `${event.systemPrompt}\n\n${AUTO_MODE_GUIDANCE}` };
+      let systemPrompt = `${event.systemPrompt}\n\n${AUTO_MODE_GUIDANCE}`;
+      if (cfg.decisionModel?.enabled && decisionModelClient && ctx) {
+        let transcript = "";
+        let entries: unknown[] = [];
+        try {
+          transcript = buildClassifierTranscript(ctx, {
+            maxUserTokens: cfg.maxUserTranscriptTokens,
+            maxToolTokens: cfg.maxToolTranscriptTokens,
+          });
+          entries = ctx.sessionManager.getBranch?.() ?? [];
+        } catch {
+          // Context is best effort; preflight never blocks startup.
+        }
+        const pf = await runPreflight({
+          client: decisionModelClient,
+          settings: cfg.decisionModel,
+          ctx,
+          prompt: lastUserAsk,
+          agentLastMessage: lastAssistantText(entries),
+          transcript,
+          projectInstructions: loadedContext,
+          grants: state.grants ?? [],
+          policy: {
+            environment: cfg.environment,
+            allow: cfg.allow,
+            softDeny: cfg.softDeny,
+            hardDeny: cfg.hardDeny,
+          },
+          draft: options.draftScope ?? createDraftFn(ctx, cfg),
+        });
+        try {
+          logJevCall(createLogger({
+            enabled: cfg.log.enabled,
+            classifierIo: cfg.log.classifierIo,
+            sessionFile: ctx.sessionManager.getSessionFile?.(),
+            sessionDir: ctx.sessionManager.getSessionDir?.() ?? "",
+            sessionCwd: ctx.cwd,
+            sessionId: ctx.sessionManager.getSessionId?.() ?? "unknown",
+            logRoot: options.logRoot,
+            now: now(),
+          }), {
+            stage: "preflight",
+            state: pf.state,
+            answers: pf.answers,
+            decision: pf.cancelled ? "cancelled" : pf.outcome,
+            durationMs: pf.durationMs,
+            reportedModel: pf.reportedModel,
+            ok: pf.outcome !== "failed",
+            ...(pf.error ? { error: pf.error } : {}),
+          });
+        } catch {
+          // Logging never affects startup.
+        }
+        if (pf.grant) {
+          state.grants = [...(state.grants ?? []), pf.grant];
+          persist();
+        }
+        if (pf.guidance) systemPrompt = `${systemPrompt}\n\n${pf.guidance}`;
+        if (pf.cancelled) {
+          try {
+            ctx.abort?.();
+          } catch {
+            // The cancel guidance still stops tool use.
+          }
+        }
+      }
+      return { systemPrompt };
     });
 
     pi.on("tool_call", async (event, ctx) => {

@@ -68,7 +68,7 @@ export function classifierReasoningForConfig(
     : { mode: "explicit", requestedLevel };
 }
 
-async function resolveClassifier(
+export async function resolveClassifier(
   ctx: ExtensionContext,
   config: EffectiveConfig,
 ): Promise<ClassifierResolution> {
