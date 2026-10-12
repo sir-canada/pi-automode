@@ -308,6 +308,9 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
     const recentActions: string[] = [];
     let globalConfigNoticeShown = false;
     let decisionModelClient: JevClient | undefined;
+    // Set when the user cancels the preflight dialog; every tool_call is
+    // blocked until the next user prompt (fail closed, not prompt-only).
+    let preflightCancelled = false;
     // Parent-state inheritance: internal, read-only, synchronous query.
     let unsubscribeEnabledQuery: (() => void) | undefined;
 
@@ -669,6 +672,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         event.systemPromptOptions,
       );
       lastUserAsk = typeof event.prompt === "string" ? event.prompt : "";
+      preflightCancelled = false;
       if (state.grants?.some((g) => g.scope === "task")) {
         state.grants = clearTaskGrants(state.grants);
         persist();
@@ -732,6 +736,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         }
         if (pf.guidance) systemPrompt = `${systemPrompt}\n\n${pf.guidance}`;
         if (pf.cancelled) {
+          preflightCancelled = true;
           try {
             ctx.abort?.();
           } catch {
@@ -753,6 +758,13 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       // 7. classifier for every remaining action, fail-closed on setup/parse errors.
       const cfg = effectiveConfig();
       if (!cfg.enabled) return undefined;
+      if (preflightCancelled) {
+        return {
+          block: true,
+          reason:
+            "[pi-automode] Action blocked; the tool did not run. The user cancelled this request in the pi-automode scope dialog. Do not call any tools; reply that the task was cancelled and wait for new instructions.",
+        };
+      }
 
       const input = event.input as Record<string, unknown>;
       const summary = actionSummary(event.toolName, input);
