@@ -237,3 +237,18 @@ test("hook: accepted permissions.ask still blocks at destructive >= block thresh
 	assert.equal(r?.block, true);
 	assert.equal(h.llm, 0);
 });
+
+for (const mode of ["gate", "gate+block", "replace"] as const) {
+	test(`hook: accepted ask, ${mode}: destructive 0.81 runs`, async () => {
+		const h = await setup({ mode, decide: async () => ({ answers: answers(0.81, 0.9) }), config: { permissionAsk: [parseToolPattern("bash(git push*)")!] } });
+		const r = await h.run("git push origin x");
+		assert.equal(r?.block, undefined);
+		assert.equal(h.llm, 0);
+	});
+	test(`hook: accepted ask, ${mode}: Jev failure -> ${mode === "replace" ? "allow" : "LLM"}`, async () => {
+		const h = await setup({ mode, decide: async () => { throw new Error("down"); }, config: { permissionAsk: [parseToolPattern("bash(git push*)")!] } });
+		const r = await h.run("git push origin x");
+		assert.equal(r?.block, undefined);
+		assert.equal(h.llm, mode === "replace" ? 0 : 1);
+	});
+}

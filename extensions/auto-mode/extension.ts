@@ -1107,8 +1107,21 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         }, ctx.signal);
         // Plan §1.12: an accepted permissions.ask click is the approval. Jev
         // only blocks when destructive reaches the block threshold; anything
-        // below runs, in every mode. Jev failures keep the mode failure policy.
-        if (askRequiresClassifier && jevOutcome.ok) {
+        // below runs, in every mode. A failed or truncated Jev result goes to
+        // the LLM in gate/gate+block; in replace the click is the only judge.
+        if (askRequiresClassifier && (!jevOutcome.ok || jevOutcome.state.truncated)) {
+          jevOutcome = settings.mode === "replace"
+            ? {
+              ...jevOutcome,
+              result: "allow",
+              reason: `User approved permissions.ask; decision model ${jevOutcome.ok ? "state truncated" : "unavailable"} in replace mode`,
+            }
+            : {
+              ...jevOutcome,
+              result: "llm",
+              reason: `User approved permissions.ask; decision model ${jevOutcome.ok ? "state truncated" : "unavailable"}; LLM review required`,
+            };
+        } else if (askRequiresClassifier) {
           const destructive = jevOutcome.answers.destructive;
           const blockAt = settings.thresholds.destructive.block;
           if (destructive?.type === "noul" && destructive.value < blockAt) {
