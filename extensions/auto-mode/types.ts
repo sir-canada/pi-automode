@@ -1,3 +1,4 @@
+import type { Grant } from "./grants.ts";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type {
@@ -133,6 +134,8 @@ export type AutoModeState = {
   classifierAllowed: number;
   classifierDenied: number;
   recentDenials: DenialRecord[];
+  /** Session/task grants (plan §1.5). Context for the decision model, never a bypass. */
+  grants?: Grant[];
 };
 
 export type DenialRecord = {

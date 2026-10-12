@@ -262,9 +262,9 @@ export const DEFAULT_DECISION_MODEL_QUESTIONS: JevQuestionMap = {
   covered_by_grant: {
     type: "noul",
     text:
-      "Is the proposed action covered by the user's stated authorization or grant?",
+      "Does an existing user approval cover exactly this action?",
     instructions: [
-      "1. Read the grant or authorization text in the state carefully.",
+      "1. Read the grant or authorization text in the state carefully. Answer yes only if the approval text clearly names this action or its path/command scope; if unsure, answer no.",
       "2. Answer yes only when the action stays inside the granted scope (task, paths, operations).",
       "3. Actions outside the granted scope, or actions with no grant at all, are not covered.",
       "4. If unsure, answer no.",

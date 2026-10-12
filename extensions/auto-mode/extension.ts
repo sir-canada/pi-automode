@@ -73,6 +73,12 @@ import {
   loadedContextFromSystemPromptOptions,
 } from "./transcript.ts";
 import { runPerActionDecision } from "./decision-model.ts";
+import {
+  clearTaskGrants,
+  formatGrants,
+  runAllowTierCheck,
+  runGrantAwareDecision,
+} from "./grants.ts";
 import { logJevCall } from "./log.ts";
 import type {
   AutoModeState,
@@ -321,6 +327,8 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
           `hard_deny entries: ${cfg.hardDeny.length}`,
           `last decision: ${state.lastDecision ?? "none"}`,
           "last reason: omitted from model-visible inspection",
+          `active grants: ${(state.grants ?? []).length}`,
+          ...(state.grants ?? []).map((g) => `  ${g.id} [${g.scope}] ${g.text}`),
         ].join("\n");
         return {
           status,
@@ -368,6 +376,59 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
           : `${denials.length} recent auto-mode denial(s). Reasons and action payloads are omitted.`,
         denials,
       };
+    }
+
+    /**
+     * Allow-tier scope_creep check (plan §1.6). Returns true when the action
+     * must leave the allow tier for the normal flow. Jev failure fails open.
+     */
+    async function allowTierEscalates(
+      ctx: ExtensionContext,
+      cfg: EffectiveConfig,
+      toolName: string,
+      input: Record<string, unknown>,
+      insideCwd: boolean | undefined,
+      logCtx: LogCtx,
+    ): Promise<boolean> {
+      if (!cfg.decisionModel?.enabled || !decisionModelClient) return false;
+      if (READ_ONLY_TOOLS.has(toolName)) return false;
+      let transcript = "";
+      try {
+        transcript = buildClassifierTranscript(ctx, {
+          maxUserTokens: cfg.maxUserTranscriptTokens,
+          maxToolTokens: cfg.maxToolTranscriptTokens,
+        });
+      } catch {
+        transcript = "";
+      }
+      const outcome = await runAllowTierCheck(decisionModelClient, cfg.decisionModel, {
+        userAsk: lastUserAsk,
+        grants: (state.grants ?? []).map((g) => g.text),
+        action: { toolName, input, cwd: ctx.cwd, insideCwd },
+        recentActions: recentActions.slice(-3),
+        transcript,
+        projectInstructions: loadedContext,
+        policy: {
+          environment: cfg.environment,
+          allow: cfg.allow,
+          softDeny: cfg.softDeny,
+          hardDeny: cfg.hardDeny,
+        },
+      }, ctx.signal);
+      logJevCall(logCtx.logger, {
+        decisionId: logCtx.decisionId,
+        stage: "per_action",
+        state: outcome.state.text,
+        answers: outcome.answers,
+        decision: outcome.ok
+          ? (outcome.escalate ? "allow-tier:escalate" : "allow-tier:allow")
+          : "allow-tier:fail-open",
+        durationMs: outcome.durationMs,
+        reportedModel: outcome.reportedModel,
+        ok: outcome.ok,
+        ...(outcome.error ? { error: outcome.error } : {}),
+      });
+      return outcome.escalate;
     }
 
     function blockedToolReason(reason: string): string {
@@ -503,6 +564,10 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         event.systemPromptOptions,
       );
       lastUserAsk = typeof event.prompt === "string" ? event.prompt : "";
+      if (state.grants?.some((g) => g.scope === "task")) {
+        state.grants = clearTaskGrants(state.grants);
+        persist();
+      }
       return { systemPrompt: `${event.systemPrompt}\n\n${AUTO_MODE_GUIDANCE}` };
     });
 
@@ -746,7 +811,10 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
               const protectedWrite =
                 (event.toolName === "write" || event.toolName === "edit") &&
                 isProtectedPath(policyPath, policyCwd, cfg.protectedPaths);
-              if (!askRequiresClassifier && !protectedWrite) {
+              if (
+                !askRequiresClassifier && !protectedWrite &&
+                !(await allowTierEscalates(ctx, cfg, event.toolName, input, true, logCtx))
+              ) {
                 return allow(
                   ctx,
                   "inside-working-directory",
@@ -792,7 +860,10 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
               protectedWrite = true;
             }
           }
-          if (!protectedWrite) {
+          if (
+            !protectedWrite &&
+            !(await allowTierEscalates(ctx, cfg, event.toolName, input, undefined, logCtx))
+          ) {
             return allow(
               ctx,
               "permissions.allow",
@@ -845,9 +916,13 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         } catch {
           transcript = "";
         }
-        jevOutcome = await runPerActionDecision(decisionModelClient, settings, {
+        const grantTexts = (state.grants ?? []).map((g) => g.text);
+        const runDecision = grantTexts.length > 0
+          ? runGrantAwareDecision
+          : runPerActionDecision;
+        jevOutcome = await runDecision(decisionModelClient, settings, {
           userAsk: lastUserAsk,
-          grants: [],
+          grants: grantTexts,
           action: { toolName: event.toolName, input, cwd: ctx.cwd, insideCwd },
           recentActions: priorActions,
           transcript,
@@ -1019,10 +1094,22 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
           classifierDenied: 0,
           recentDenials: [],
           enabledOverride: state.enabledOverride,
+          grants: [],
         };
         persist();
         updateUi(ctx);
         ctx.ui.notify("pi-automode counters reset", "info");
+        return;
+      }
+      if (command === "grants") {
+        if (remainder === "clear") {
+          state.grants = [];
+          persist();
+          updateUi(ctx);
+          ctx.ui.notify("pi-automode grants cleared", "info");
+          return;
+        }
+        ctx.ui.notify(formatGrants(state.grants ?? []), "info");
         return;
       }
       if (command === "defaults") {
@@ -1124,7 +1211,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       }
 
       ctx.ui.notify(
-        "Usage: /automode [status|on|off|toggle|reload|reset|defaults|config|denials|model [provider/id]]",
+        "Usage: /automode [status|on|off|toggle|reload|reset|defaults|config|denials|grants [clear]|model [provider/id]]",
         "error",
       );
     }
