@@ -300,3 +300,14 @@ test("hook: exactly the 3 prior actions reach the Jev state", async () => {
 	assert.doesNotMatch(last, /echo step1/);
 	for (const n of [2, 3, 4]) assert.match(last, new RegExp(`echo step${n}`));
 });
+
+for (const [mode, s, expectBlock, expectLlm] of [
+	["gate", 0.9, false, 1], ["gate+block", 0.82, true, 0], ["replace", 0.5, true, 0], ["replace", 0.18, false, 0], ["gate", 0.19, false, 1],
+] as const) {
+	test(`hook: scope_creep drives decision (${mode}, scope ${s})`, async () => {
+		const h = await setup({ mode, decide: async () => ({ answers: answers(0.1, s) }) });
+		const r = await h.run("echo hi");
+		assert.equal(r?.block === true, expectBlock);
+		assert.equal(h.llm, expectLlm);
+	});
+}
