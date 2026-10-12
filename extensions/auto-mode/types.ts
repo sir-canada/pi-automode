@@ -1,4 +1,5 @@
 import type { Grant } from "./grants.ts";
+import type { PendingApproval } from "./pending.ts";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type {
@@ -136,6 +137,8 @@ export type AutoModeState = {
   recentDenials: DenialRecord[];
   /** Session/task grants (plan §1.5). Context for the decision model, never a bypass. */
   grants?: Grant[];
+  /** Pending approvals for decision-model blocks (plan §1.8). Session-only. */
+  pending?: PendingApproval[];
 };
 
 export type DenialRecord = {

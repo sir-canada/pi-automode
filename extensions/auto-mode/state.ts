@@ -3,6 +3,7 @@ import { DENIAL_HISTORY_LIMIT } from "./constants.ts";
 import type { AutoModeState, DenialRecord, EffectiveConfig } from "./types.ts";
 import { safeJson, truncateMiddle } from "./utils.ts";
 import { isGrant } from "./grants.ts";
+import { isPendingApproval, openPending } from "./pending.ts";
 
 export function pushDenial(state: AutoModeState, denial: DenialRecord): void {
   state.recentDenials = [
@@ -47,6 +48,7 @@ export function statusText(
     `last reason: ${state.lastReason ?? "none"}`,
     `active grants: ${(state.grants ?? []).length}`,
     ...(state.grants ?? []).map((g) => `  ${g.id} [${g.scope}] ${g.text}`),
+    `pending approvals: ${openPending(state.pending ?? []).length}`,
   ].join("\n");
 }
 
@@ -101,6 +103,9 @@ export function restoreState(ctx: ExtensionContext): AutoModeState {
         : [],
       grants: Array.isArray(entry.data.grants)
         ? entry.data.grants.filter(isGrant)
+        : [],
+      pending: Array.isArray(entry.data.pending)
+        ? entry.data.pending.filter(isPendingApproval)
         : [],
     };
   }

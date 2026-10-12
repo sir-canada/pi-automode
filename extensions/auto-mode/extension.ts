@@ -82,6 +82,15 @@ import {
 } from "./grants.ts";
 import { logJevCall } from "./log.ts";
 import {
+  addPending,
+  approvePending,
+  deliverRetry,
+  formatPending,
+  openPending,
+  scoresFromAnswers,
+  skipAndContinueReason,
+} from "./pending.ts";
+import {
   buildDraftUserMessage,
   DRAFT_SYSTEM_PROMPT,
   lastAssistantText,
@@ -477,6 +486,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       ctx: ExtensionContext,
       denial: DenialRecord,
       logCtx: LogCtx,
+      agentReason?: string,
     ): { block: true; reason: string } {
       state.blockedActions += 1;
       state.lastDecision = "block";
@@ -508,7 +518,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       }
       return {
         block: true,
-        reason: blockedToolReason(denial.reason),
+        reason: agentReason ?? blockedToolReason(denial.reason),
       };
     }
 
@@ -1061,13 +1071,23 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
           );
         }
         if (jevOutcome.result === "block") {
+          state.pending = addPending(state.pending ?? [], {
+            id: `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+            ts: Date.now(),
+            tool: event.toolName,
+            inputSummary: truncateMiddle(safeJson(input, 2000), 300),
+            actionSummary: summary,
+            reason: jevOutcome.reason,
+            questionScores: scoresFromAnswers(jevOutcome.answers),
+            sessionId: ctx.sessionManager.getSessionId?.() ?? "unknown",
+          });
           return block(ctx, {
             timestamp: Date.now(),
             toolName: event.toolName,
             reason: jevOutcome.reason,
             action: summary,
             kind: "classifier",
-          }, logCtx);
+          }, logCtx, skipAndContinueReason(jevOutcome.reason));
         }
         jevOutcome = Object.assign(jevOutcome, { pendingLog: jevLog });
       }
@@ -1199,6 +1219,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
           recentDenials: [],
           enabledOverride: state.enabledOverride,
           grants: [],
+          pending: [],
         };
         persist();
         updateUi(ctx);
@@ -1214,6 +1235,37 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
           return;
         }
         ctx.ui.notify(formatGrants(state.grants ?? []), "info");
+        return;
+      }
+      if (command === "pending") {
+        const open = openPending(state.pending ?? []);
+        ctx.ui.notify(formatPending(state.pending ?? []), open.length > 0 ? "warning" : "info");
+        if (open.length === 0 || !ctx.hasUI) return;
+        const labels = open.map((p, i) => `${i + 1}. ${p.tool}: ${truncateMiddle(p.inputSummary, 80)}`);
+        const picked = await ctx.ui.select("Pending approvals", labels);
+        const item = picked ? open[labels.indexOf(picked)] : undefined;
+        if (!item) return;
+        const choice = await ctx.ui.select(`Approve ${item.tool}?`, [
+          "Approve + retry now",
+          "Approve only",
+          "Cancel",
+        ]);
+        if (choice !== "Approve + retry now" && choice !== "Approve only") return;
+        const result = approvePending(
+          state.pending ?? [],
+          item.id,
+          `g${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+        );
+        state.pending = result.pending;
+        if (result.grant) state.grants = [...(state.grants ?? []), result.grant];
+        persist();
+        updateUi(ctx);
+        if (choice === "Approve + retry now") {
+          deliverRetry(pi, ctx.isIdle?.() ?? true, item);
+          ctx.ui.notify(`pi-automode approved ${item.tool}; agent told to retry`, "info");
+        } else {
+          ctx.ui.notify(`pi-automode approved ${item.tool} (grant recorded, no retry)`, "info");
+        }
         return;
       }
       if (command === "defaults") {
@@ -1315,7 +1367,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       }
 
       ctx.ui.notify(
-        "Usage: /automode [status|on|off|toggle|reload|reset|defaults|config|denials|grants [clear]|model [provider/id]]",
+        "Usage: /automode [status|on|off|toggle|reload|reset|defaults|config|denials|grants [clear]|pending|model [provider/id]]",
         "error",
       );
     }
