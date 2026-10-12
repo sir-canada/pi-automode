@@ -9,6 +9,7 @@ import type {
   ClassificationDecision,
   DecisionKind,
 } from "./types.ts";
+import type { JevAnswerMap } from "./decision-model.ts";
 
 /** A final allow/block decision for a tool call. */
 export type DecisionLogEntry = {
@@ -50,10 +51,38 @@ export type ClassifierUsageLogEntry = {
   };
 };
 
+/** Which Jev call produced this entry. */
+export type JevStage =
+  | "probe"
+  | "preflight"
+  | "per_action"
+  | "allow_tier"
+  | "ask";
+
+/**
+ * One decision-model (Jev) call: the state and questions sent, the answers
+ * and resulting decision, latency, the model the endpoint reported, and any
+ * failure. Gated on `log.enabled` only (not `classifierIo`).
+ */
+export type JevLogEntry = {
+  type: "jev";
+  ts: string;
+  decisionId?: string;
+  stage: JevStage;
+  state: string;
+  answers: JevAnswerMap;
+  decision: string;
+  durationMs: number;
+  reportedModel: string;
+  ok: boolean;
+  error?: string;
+};
+
 export type LogEntry =
   | DecisionLogEntry
   | ClassifierLogEntry
-  | ClassifierUsageLogEntry;
+  | ClassifierUsageLogEntry
+  | JevLogEntry;
 
 export type Logger = {
   enabled: boolean;
@@ -170,4 +199,22 @@ export function createLogger(opts: LoggerOptions): Logger {
       appendJsonl(path, entry);
     },
   };
+}
+
+/** Fields the caller supplies when emitting a `jev` entry; `ts` is optional. */
+export type JevLogInput = Omit<JevLogEntry, "type" | "ts"> & { ts?: string };
+
+/**
+ * Emit one `jev` observability entry. Gated on `log.enabled` only (never on
+ * `classifierIo`), so every decision-model call is visible when logging is
+ * on. No-ops when the logger is disabled.
+ */
+export function logJevCall(logger: Logger, entry: JevLogInput): void {
+  if (!logger.enabled) return;
+  const { ts, ...rest } = entry;
+  logger.append({
+    type: "jev",
+    ts: ts ?? new Date().toISOString(),
+    ...rest,
+  });
 }

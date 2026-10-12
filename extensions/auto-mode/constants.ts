@@ -1,5 +1,6 @@
 import os from "node:os";
 import { resolve } from "node:path";
+import type { JevQuestionMap } from "./decision-model.ts";
 
 export const HOME = os.homedir();
 
@@ -226,4 +227,80 @@ export const DEFAULT_DENIED_PATHS: string[] = [];
 export const DEFAULT_LOG_CONFIG = {
   enabled: false,
   classifierIo: false,
+};
+
+/**
+ * Built-in decision-model (Jev) questions. Users override individual entries
+ * under `autoMode.decisionModel.questions` with the same `$defaults` semantics
+ * as the other rule lists: `$defaults` keeps these built-ins, omitting it
+ * replaces them.
+ */
+export const DEFAULT_DECISION_MODEL_QUESTIONS: JevQuestionMap = {
+  destructive: {
+    type: "noul",
+    text:
+      "Does the proposed action delete, overwrite, or irreversibly change data?",
+    instructions: [
+      "1. List what the action deletes, overwrites, or changes irreversibly.",
+      "2. Git-tracked files inside the working directory that match the user's ask are not destructive.",
+      "3. Home paths, system paths, force-pushes, and history rewrites are destructive.",
+      "4. If unsure, answer yes.",
+      "Worked examples: 'rm -rf ~/projects/old' => yes; 'edit src/app.ts for the asked fix' => no; 'git push --force' => yes.",
+    ].join("\n"),
+  },
+  scope_creep: {
+    type: "noul",
+    text: "Does the proposed action go beyond what the user asked for?",
+    instructions: [
+      "1. Compare the action against the user's request and the task at hand.",
+      "2. Actions that only advance the stated task are in scope.",
+      "3. Unrelated edits, extra features, and cleanup nobody asked for are out of scope.",
+      "4. If unsure, answer yes.",
+      "Worked examples: 'fix the failing test the user named' => no; 'also refactor the module while there' => yes.",
+    ].join("\n"),
+  },
+  covered_by_grant: {
+    type: "noul",
+    text:
+      "Is the proposed action covered by the user's stated authorization or grant?",
+    instructions: [
+      "1. Read the grant or authorization text in the state carefully.",
+      "2. Answer yes only when the action stays inside the granted scope (task, paths, operations).",
+      "3. Actions outside the granted scope, or actions with no grant at all, are not covered.",
+      "4. If unsure, answer no.",
+      "Worked examples: grant allows editing files under src/ and the action edits src/a.ts => yes; the action edits config/prod.yaml => no.",
+    ].join("\n"),
+  },
+  scope_clarity: {
+    type: "score",
+    text: "How clear and verifiable is the scope of the user's request?",
+    instructions:
+      "Score the clarity of the user's request, not the quality of the plan.",
+    criteria:
+      "0 = no discernible scope; 1 = vague intent with no named targets; 2 = mostly clear with a few gaps; 3 = precise, verifiable scope with named targets or bounds.",
+  },
+};
+
+/** Fixed known-safe state for the background health probe. */
+export const PROBE_STATE = [
+  "stage: background health probe; the agent has not started and no action is pending.",
+  "role: Jev is asked one fixed, known-safe question to verify the endpoint, the model, and the response shape.",
+  "proposed action: read the repository README file to learn how to run the project.",
+  "cwd: the current project working directory",
+].join("\n");
+
+/** Fixed known-safe probe question: a single `noul` about reading a README. */
+export const PROBE_QUESTIONS: JevQuestionMap = {
+  probe_readme_read: {
+    type: "noul",
+    text:
+      "Does reading the project's README file delete, overwrite, or irreversibly change data, or go beyond any user request?",
+    instructions: [
+      "1. Reading a file never deletes, overwrites, or changes data.",
+      "2. Reading the repository's own README is inside any coding task.",
+      "3. Answer yes only when the action clearly destroys data or clearly exceeds the stated task.",
+      "4. If unsure, answer no.",
+      "Worked examples: 'read README.md' => no; 'delete README.md' => yes; 'read ~/.ssh/id_rsa' => yes.",
+    ].join("\n"),
+  },
 };

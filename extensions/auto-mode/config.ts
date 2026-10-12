@@ -13,6 +13,7 @@ import {
   DEFAULT_ALLOW_INSIDE_WORKING_DIRECTORY,
   DEFAULT_CLASSIFIER_TIMEOUT_MS,
   DEFAULT_CLASSIFY_READ_ONLY_TOOLS,
+  DEFAULT_DECISION_MODEL_QUESTIONS,
   DEFAULT_DENIED_PATHS,
   DEFAULT_ENVIRONMENT,
   DEFAULT_FAST_CLASSIFIER_MAX_TOKENS,
@@ -29,6 +30,13 @@ import {
   PI_PROJECT_SHARED_SETTINGS,
 } from "./constants.ts";
 import { parseModelSpec } from "./model.ts";
+import {
+  applyDecisionModelPatch,
+  parseDecisionModelBlock,
+  type DecisionModelPatch,
+  type DecisionModelQuestionOverrides,
+  type DecisionModelSettings,
+} from "./decision-model.ts";
 import {
   isMalformedToolPattern,
   MAX_WILDCARD_PATTERN_LENGTH,
@@ -297,6 +305,7 @@ export function validateSettingsFile(
         "hard_deny",
         "hardDeny",
         "log",
+        "decisionModel",
       ]);
       for (const key of Object.keys(autoMode)) {
         if (!knownAutoMode.has(key)) {
@@ -411,6 +420,11 @@ export function validateSettingsFile(
       );
       if (hasOwn(autoMode, "log")) {
         validateLogSetting(autoMode.log, source, diagnostics);
+      }
+      if (hasOwn(autoMode, "decisionModel")) {
+        diagnostics.push(
+          ...parseDecisionModelBlock(autoMode.decisionModel, source).diagnostics,
+        );
       }
     }
   }
@@ -717,6 +731,14 @@ export function buildEffectiveConfigFromSources(
   const deniedPaths = createRuleAccumulator(DEFAULT_DENIED_PATHS);
   const softDeny = createRuleAccumulator(DEFAULT_SOFT_DENY);
   const hardDeny = createRuleAccumulator(DEFAULT_HARD_DENY);
+  // Same `$defaults` accumulator semantics as the rule lists above: entries
+  // accumulate across sources, the last source that sets `questions` decides
+  // whether the built-in questions are kept.
+  const decisionModelQuestions: DecisionModelQuestionOverrides = {
+    includeDefaults: true,
+    entries: {},
+  };
+  let decisionModel: DecisionModelSettings | undefined;
 
   for (const settings of configurableSettings) {
     config = applyAutoModeScalars(config, settings.autoMode);
@@ -736,6 +758,19 @@ export function buildEffectiveConfigFromSources(
       hardDeny,
       settings.autoMode?.hard_deny ?? settings.autoMode?.hardDeny,
     );
+    const decisionModelPatch: DecisionModelPatch | undefined =
+      parseDecisionModelBlock(settings.autoMode?.decisionModel, "").patch;
+    if (decisionModelPatch) {
+      if (decisionModelPatch.questions) {
+        Object.assign(
+          decisionModelQuestions.entries,
+          decisionModelPatch.questions.entries,
+        );
+        decisionModelQuestions.includeDefaults =
+          decisionModelPatch.questions.includeDefaults;
+      }
+      decisionModel = applyDecisionModelPatch(decisionModel, decisionModelPatch);
+    }
   }
 
   config = {
@@ -747,6 +782,20 @@ export function buildEffectiveConfigFromSources(
     softDeny: finalizeRuleSetting(softDeny),
     hardDeny: finalizeRuleSetting(hardDeny),
   };
+  if (decisionModel) {
+    config = {
+      ...config,
+      decisionModel: {
+        ...decisionModel,
+        questions: {
+          ...(decisionModelQuestions.includeDefaults
+            ? DEFAULT_DECISION_MODEL_QUESTIONS
+            : {}),
+          ...decisionModelQuestions.entries,
+        },
+      },
+    };
+  }
 
   for (
     const settings of [
@@ -792,6 +841,19 @@ function ignoredSharedAllowDiagnostics(
     if (!file || !permissions || !hasOwn(permissions, "allow")) return [];
     return [
       `${file.path}: permissions.allow is ignored in shared project config. Use a user-owned config source instead`,
+    ];
+  });
+}
+
+/** Shared project `.pi/automode.json` cannot set the decision-model block. */
+function ignoredSharedDecisionModelDiagnostics(
+  files: Array<LoadedSettingsFile | undefined>,
+): string[] {
+  return files.flatMap((file) => {
+    const autoMode = file?.settings?.autoMode;
+    if (!file || !autoMode || !hasOwn(autoMode, "decisionModel")) return [];
+    return [
+      `${file.path}: autoMode.decisionModel is ignored in shared project config. Use a user-owned config source instead`,
     ];
   });
 }
@@ -852,19 +914,39 @@ export function loadEffectiveConfigWithDiagnostics(
   const sharedAllowDiagnostics = ignoredSharedAllowDiagnostics(
     projectSharedFiles,
   );
+  const sharedDecisionModelDiagnostics = ignoredSharedDecisionModelDiagnostics(
+    projectSharedFiles,
+  );
+
+  let config = buildEffectiveConfigFromSources({
+    globalSettings: loadedSettingsToSettings(globalFiles),
+    projectLocalSettings: loadedSettingsToSettings(projectLocalFiles),
+    projectSharedSettings: loadedSettingsToSettings(projectSharedFiles),
+    inlineSettings,
+  });
+  const allDiagnostics = [
+    ...fileDiagnostics,
+    ...sharedAllowDiagnostics,
+    ...sharedDecisionModelDiagnostics,
+    ...diagnostics,
+  ];
+  // Post-merge usability check: an enabled block without an endpoint or model
+  // can never work, so ignore it (fail back to today's behaviour) instead of
+  // failing every call at runtime.
+  if (
+    config.decisionModel?.enabled &&
+    (!config.decisionModel.endpoint || !config.decisionModel.model)
+  ) {
+    allDiagnostics.push(
+      "autoMode.decisionModel: an enabled block requires a valid endpoint and model; the decision model is ignored",
+    );
+    config = { ...config };
+    delete config.decisionModel;
+  }
 
   return {
-    config: buildEffectiveConfigFromSources({
-      globalSettings: loadedSettingsToSettings(globalFiles),
-      projectLocalSettings: loadedSettingsToSettings(projectLocalFiles),
-      projectSharedSettings: loadedSettingsToSettings(projectSharedFiles),
-      inlineSettings,
-    }),
-    diagnostics: [
-      ...fileDiagnostics,
-      ...sharedAllowDiagnostics,
-      ...diagnostics,
-    ],
+    config,
+    diagnostics: allDiagnostics,
   };
 }
 

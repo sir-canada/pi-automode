@@ -33,6 +33,12 @@ import {
 } from "./config.ts";
 import { deterministicHardDeny } from "./hard-deny.ts";
 import {
+  createDecisionModelClient,
+  resetDecisionModelSession,
+  type DecisionModelSettings,
+  type JevClient,
+} from "./decision-model.ts";
+import {
   createLogger,
   newDecisionId,
   resolveLogPath,
@@ -130,6 +136,8 @@ export type PiAutomodeOptions = {
   now?: () => Date;
   /** Override Bash analysis in tests. Runtime code uses unbash. */
   analyzeBash?: typeof analyzeBash;
+  /** Override the decision-model (Jev) client in tests so unit tests never hit the network. */
+  createDecisionModelClient?: (settings: DecisionModelSettings) => JevClient;
 };
 
 type LogCtx = {
@@ -228,6 +236,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
     };
     let loadedContext = "";
     let globalConfigNoticeShown = false;
+    let decisionModelClient: JevClient | undefined;
     // Parent-state inheritance: internal, read-only, synchronous query.
     let unsubscribeEnabledQuery: (() => void) | undefined;
 
@@ -436,6 +445,18 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       config = loadResult.config;
       configDiagnostics = loadResult.diagnostics;
       state = restoreState(ctx);
+      // New session: health and the once-per-session model-mismatch warning
+      // start fresh. The probe below runs in the background and is never
+      // awaited, so startup pays no latency for it.
+      resetDecisionModelSession();
+      decisionModelClient = undefined;
+      if (config.decisionModel?.enabled) {
+        const createClient = options.createDecisionModelClient ??
+          createDecisionModelClient;
+        const client = createClient(config.decisionModel);
+        decisionModelClient = client;
+        void client.probe().catch(() => undefined);
+      }
       unsubscribeEnabledQuery?.();
       // Subscribe only after binding: excluded extensions must not answer.
       unsubscribeEnabledQuery = pi.events?.on("pi-automode:get-enabled", (raw) => {

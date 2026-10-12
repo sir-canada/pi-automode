@@ -1,5 +1,9 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+  DecisionModelInput,
+  DecisionModelSettings,
+} from "./decision-model.ts";
 
 export type ClassifierReasoningLevel =
   | "low"
@@ -60,6 +64,12 @@ export type AutoModeSettings = {
   hard_deny?: unknown;
   hardDeny?: unknown;
   log?: Partial<LogConfig>;
+  /**
+   * Optional decision-model (Jev) block. Validated in decision-model.ts and
+   * read only from user-owned sources (global, project-local, inline); shared
+   * project `.pi/automode.json` cannot set it.
+   */
+  decisionModel?: DecisionModelInput;
 };
 
 export type SettingsFile = {
@@ -107,6 +117,11 @@ export type EffectiveConfig = {
   permissionAsk: ToolPattern[];
   permissionAllow: ToolPattern[];
   log: LogConfig;
+  /**
+   * Resolved `autoMode.decisionModel` settings when a valid block was
+   * provided; absent (undefined) otherwise, which keeps today's behaviour.
+   */
+  decisionModel?: DecisionModelSettings;
 };
 
 export type AutoModeState = {
