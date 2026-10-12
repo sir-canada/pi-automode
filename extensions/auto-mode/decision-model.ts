@@ -599,7 +599,10 @@ export function parseJevResponse(value: unknown): JevResponse {
         `decision model answer ${name} .type must be one of noul, choice, score`,
       );
     }
-    const answerValue = raw.value;
+    // Real Jev responses carry the value under the type name
+    // ({type:"noul",noul:0.25}, {type:"choice",choice:"billing"},
+    // {type:"score",score:0.84}); `.value` is accepted as a fallback.
+    const answerValue = hasOwn(raw, type) ? raw[type] : raw.value;
     if (type === "choice") {
       if (typeof answerValue !== "string") {
         throw new JevError(

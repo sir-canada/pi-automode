@@ -16,3 +16,15 @@ test("negative score values are shape errors", () => {
   assert.throws(() => parseJevResponse(resp("score", -0.5)), (e) => e instanceof JevError && e.kind === "shape");
   assert.equal(parseJevResponse(resp("score", 2.4)).answers.x.value, 2.4);
 });
+
+test("real Jev wire shape: value keyed by type name", () => {
+  const r = parseJevResponse({ model: "jev-1.13-free", answers: {
+    a: { type: "noul", noul: 0.25 },
+    b: { type: "choice", choice: "billing", confidence: 1, probabilities: { billing: 1 } },
+    c: { type: "score", score: 0.84, confidence: 0.58 },
+  } });
+  assert.equal(r.answers.a.value, 0.25);
+  assert.equal(r.answers.b.value, "billing");
+  assert.equal(r.answers.c.value, 0.84);
+  assert.throws(() => parseJevResponse({ model: "m", answers: { a: { type: "noul", noul: 1.5 } } }), (e) => e instanceof JevError && e.kind === "shape");
+});
