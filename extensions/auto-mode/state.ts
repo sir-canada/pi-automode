@@ -25,10 +25,29 @@ export function statusLine(
   return `AM ${circle} a:${allowed} d:${state.blockedActions}${classifier}`;
 }
 
+/** Decision-model (Jev) runtime health shown by `/automode status`. */
+export type DecisionModelStatus = {
+  health: "healthy" | "unavailable" | "unknown";
+  reportedModel?: string;
+  allowTierFailures: number;
+  breakerFailures: number;
+};
+
 export function statusText(
   config: EffectiveConfig,
   state: AutoModeState,
+  jev?: DecisionModelStatus,
 ): string {
+  const dm = config.decisionModel;
+  const dmLines = dm?.enabled
+    ? [
+      `decision model: ${dm.mode} (${dm.model || "unset"})`,
+      `decision model health: ${jev?.health ?? "unknown"}`,
+      `decision model reported model: ${jev?.reportedModel ?? "none"}`,
+      `decision model consecutive failures: ${jev?.breakerFailures ?? 0}`,
+      `decision model allow-tier failures: ${jev?.allowTierFailures ?? 0}`,
+    ]
+    : ["decision model: off"];
   return [
     `enabled: ${(state.enabledOverride ?? config.enabled) ? "yes" : "no"}`,
     `classifier: ${config.classifierModel ?? "current session model"}`,
@@ -49,6 +68,7 @@ export function statusText(
     `active grants: ${(state.grants ?? []).length}`,
     ...(state.grants ?? []).map((g) => `  ${g.id} [${g.scope}] ${g.text}`),
     `pending approvals: ${openPending(state.pending ?? []).length}`,
+    ...dmLines,
   ].join("\n");
 }
 

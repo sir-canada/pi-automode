@@ -81,6 +81,13 @@ import {
   runGrantAwareDecision,
 } from "./grants.ts";
 import { logJevCall } from "./log.ts";
+import { allowTierFailureCount } from "./grants.ts";
+import { decisionModelHealth } from "./decision-model.ts";
+import {
+  formatJevReport,
+  readJevEntries,
+  summarizeJevEntries,
+} from "./jev-report.ts";
 import { emitIssue } from "./issues.ts";
 import { setIssueRecorder } from "./grants.ts";
 import { setPendingIssueRecorder } from "./pending.ts";
@@ -1238,7 +1245,15 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       const remainder = rest.join(" ").trim();
 
       if (command === "status") {
-        ctx.ui.notify(statusText(effectiveConfig(), state), "info");
+        ctx.ui.notify(
+          statusText(effectiveConfig(), state, {
+            health: decisionModelHealth(),
+            reportedModel: decisionModelClient?.reportedModel,
+            allowTierFailures: allowTierFailureCount(),
+            breakerFailures: decisionModelClient?.breaker?.failures ?? 0,
+          }),
+          "info",
+        );
         return;
       }
       if (command === "on") {
@@ -1293,6 +1308,26 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
           return;
         }
         ctx.ui.notify(formatGrants(state.grants ?? []), "info");
+        return;
+      }
+      if (command === "jev-report") {
+        const logPath = resolveLogPath(
+          ctx.sessionManager.getSessionFile?.(),
+          ctx.sessionManager.getSessionDir?.() ?? "",
+          ctx.sessionManager.getSessionId?.() ?? "unknown",
+          ctx.cwd,
+          options.logRoot,
+          now(),
+        );
+        const breaker = decisionModelClient?.breaker;
+        ctx.ui.notify(
+          formatJevReport(summarizeJevEntries(readJevEntries(logPath)), {
+            breaker: breaker?.state ?? "n/a",
+            breakerFailures: breaker?.failures ?? 0,
+            allowTierFailures: allowTierFailureCount(),
+          }),
+          "info",
+        );
         return;
       }
       if (command === "pending") {
@@ -1425,7 +1460,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       }
 
       ctx.ui.notify(
-        "Usage: /automode [status|on|off|toggle|reload|reset|defaults|config|denials|grants [clear]|pending|model [provider/id]]",
+        "Usage: /automode [status|on|off|toggle|reload|reset|defaults|config|denials|grants [clear]|pending|jev-report|model [provider/id]]",
         "error",
       );
     }

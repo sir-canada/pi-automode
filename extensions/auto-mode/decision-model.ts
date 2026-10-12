@@ -728,6 +728,8 @@ export type JevClient = {
   probe(opts?: JevRequestOptions): Promise<JevDecisionResult>;
   /** Last model string the endpoint reported, if any call succeeded. */
   readonly reportedModel: string | undefined;
+  /** Circuit-breaker snapshot for status/report output. Optional for test fakes. */
+  readonly breaker?: { state: "closed" | "open" | "half-open"; failures: number };
 };
 
 /** Consecutive failures that open the circuit. */
@@ -907,6 +909,9 @@ export function createDecisionModelClient(
     probe: (opts) => request(PROBE_STATE, PROBE_QUESTIONS, opts),
     get reportedModel() {
       return reportedModel;
+    },
+    get breaker() {
+      return { state: breaker.state, failures: breaker.failures };
     },
   };
 }
