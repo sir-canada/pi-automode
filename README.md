@@ -97,6 +97,10 @@ AM ● a:12 d:2 ca:5 cd:1
 - [Observability logging](docs/observability-logging.md)
 - [Architecture decisions](docs/adr/INDEX.md)
 
+## Optional decision model
+
+Set `autoMode.decisionModel` to put a fast structured decision model (for example TypeSafe Jev) in front of, or in place of, the LLM classifier. It adds a per-prompt preflight with intent grants, pending approvals, and desktop-notification issue events. It is off by default. See [Configuration](docs/configuration.md#decision-model-optional-off-by-default).
+
 ## What runs before the classifier
 
 The extension blocks these before any allow or classifier decision:

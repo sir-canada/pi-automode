@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## New features
+
+- **Optional decision model (Jev)** — `autoMode.decisionModel` adds a fast structured decision model in `gate`, `gate+block`, or `replace` mode. It includes a per-prompt preflight with intent grants, a `scope_creep` check on allow-tier actions, pending approvals (`/automode pending`), grant management (`/automode grants`), `/automode jev-report`, a session probe with a circuit breaker, `jev` log entries, and `pi-automode:issue` events for desktop notifications. It is off by default. See [Configuration](docs/configuration.md#decision-model-optional-off-by-default).
+
 ## Bug fixes
 
 - **System-wide delete checks** — Block recursive deletion of `/Users` and its subdirectories. Check the search root after `find -H`, `-L`, or `-P` before `-delete`.

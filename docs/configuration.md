@@ -103,6 +103,62 @@ Example:
 
 Pi-automode does not support the former `maxTranscriptLines` field. Evidence selection now uses token budgets instead of line counts.
 
+## Decision model (optional, off by default)
+
+`autoMode.decisionModel` adds a fast structured decision model (for example TypeSafe Jev 1.13) in front of, or instead of, the LLM classifier. Without this block, behavior is unchanged.
+
+```json
+{
+  "autoMode": {
+    "decisionModel": {
+      "enabled": true,
+      "mode": "gate",
+      "endpoint": "http://localhost:30401/v1/systemone",
+      "model": "jev-1.13",
+      "apiKeyEnv": "JEV_API_KEY",
+      "timeoutMs": 3000,
+      "thresholds": {
+        "destructive": { "allow": 0.18, "block": 0.82 },
+        "scope_creep": { "allow": 0.18, "block": 0.82 },
+        "covered_by_grant": { "allow": 0.82 }
+      },
+      "preflight": {
+        "thresholds": { "dialog": 0.8, "prompt": 0.4 },
+        "draftThreshold": 1.5,
+        "draftTimeoutMs": 10000
+      }
+    }
+  }
+}
+```
+
+Modes:
+
+| Mode | Decision model may | LLM classifier |
+| --- | --- | --- |
+| `gate` (default) | allow only | reviews everything not allowed |
+| `gate+block` | allow and block | reviews the middle band |
+| `replace` | allow and block | never called; middle band blocks |
+
+- Sources: global config, trusted `.pi/automode.local.json`, and `PI_AUTOMODE_SETTINGS_JSON`. Shared `.pi/automode.json` cannot set it; pi-automode reports a diagnostic and ignores the block.
+- `apiKeyEnv` names an environment variable. The key is never stored in config and never logged.
+- Invalid settings produce a `/automode config` diagnostic, and the block is ignored.
+- Preflight runs on each user prompt. A risk at or above `dialog` opens an approval dialog that creates an intent grant (session by default, or this task only). A risk between `prompt` and `dialog` tells the agent to confirm scope in chat first.
+- Grants are context only. They never skip deny, ask, hard-deny, path-deny, or protected-path checks.
+- A session probe and a circuit breaker (3 consecutive failures, 60 s cooldown) guard the endpoint.
+
+Failure behavior:
+
+| Path | On decision-model failure |
+| --- | --- |
+| Preflight | agent starts normally, no grant |
+| `gate` / `gate+block` per action | LLM classifier review |
+| `replace` per action | block and add to pending |
+| Allow-tier `scope_creep` check | allow, as without the feature (logged and notified) |
+| Grant scope draft | editable template |
+
+Commands: `/automode grants [clear]`, `/automode pending`, `/automode jev-report`.
+
 ## Ask-user tools and explicit authorization
 
 Classifier evidence includes normal user messages and assistant tool-call inputs. It excludes assistant prose and all tool results. This exclusion includes answers from ask-user tools such as `@vanillagreen/pi-questions`.

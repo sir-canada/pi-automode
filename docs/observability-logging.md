@@ -141,6 +141,25 @@ Each `attempts[]` entry is `{ stage, attempt, response?, parsed?, error?, durati
 
 The array records both stages, retries, and fail-closed cases. A fast allow has one entry. A review with one successful retry has three entries.
 
+### `jev` (decision model)
+
+When `decisionModel.enabled` and `log.enabled` are both true, pi-automode writes one `jev` entry for each decision-model call. This entry does not depend on `classifierIo`.
+
+| field | meaning |
+| --- | --- |
+| `ts` | ISO timestamp |
+| `decisionId` | matches the `decision` entry for the same call, when there is one |
+| `stage` | `probe`, `preflight`, `per_action`, `allow_tier`, or `ask` |
+| `state` | the full state text sent to the decision model |
+| `answers` | typed answers keyed by question name |
+| `decision` | resulting action, for example `allow`, `block`, `llm`, `llm:allow`, `llm:block`, `allow-tier:allow`, `allow-tier:escalate`, `allow-tier:fail-open` |
+| `durationMs` | request latency |
+| `reportedModel` | model id the endpoint reported |
+| `ok` | `false` when the call failed |
+| `error` | failure message (never contains the API key) |
+
+A `llm:<verdict>` decision means the LLM classifier also ran; `/automode jev-report` uses these entries to count disagreements.
+
 ## Privacy
 
 `prompt.context` contains project instructions and transcript evidence for both classifier stages. `prompt.action` contains the separate, untruncated current action. Pi-automode logs the final stage instructions separately.

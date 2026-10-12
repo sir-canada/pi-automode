@@ -18,9 +18,13 @@ For each Pi `tool_call` event, the extension does this:
 10. Run path-deny checks, including recursive search scopes and symlink aliases.
 11. If an ask rule was accepted, skip all deterministic allow tiers.
 12. Otherwise, apply the inside-working-directory, `permissions.allow`, and read-only tiers in that order.
-13. Send every remaining action through a one-token conservative filter.
-14. If the filter requests review, run structured classifier review.
-15. Persist state and update the UI status and denial history.
+13. If `decisionModel` is enabled, inside-cwd writes/edits and `permissions.allow` matches get one decision-model `scope_creep` check; a score at or above the block threshold sends the action on to the normal flow (a failure here allows, as without the feature).
+14. If `decisionModel` is enabled, send every remaining action to the decision model (`destructive`, `scope_creep`, and `covered_by_grant` when a grant exists). Depending on `mode` it allows, blocks and queues a pending approval, or falls through to the LLM.
+15. Send every remaining action through a one-token conservative filter (never in `replace` mode).
+16. If the filter requests review, run structured classifier review.
+17. Persist state and update the UI status and denial history.
+
+When `decisionModel` is enabled, a preflight also runs on `before_agent_start` for each user prompt. It can open an approval dialog that creates an intent grant, or tell the agent to confirm scope in chat. See [Configuration](configuration.md#decision-model-optional-off-by-default).
 
 The default posture is fail-closed. If model resolution, authentication, a classifier call, or response parsing fails, pi-automode blocks the action.
 
