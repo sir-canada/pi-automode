@@ -75,7 +75,7 @@ test("deliverRetry steers a running agent and prompts a settled one", () => {
 	assert.equal(deliverRetry(pi, true, item()), "prompt");
 	assert.deepEqual(sent[0].o, { deliverAs: "steer" });
 	assert.equal(sent[1].o, undefined);
-	assert.match(sent[0].c, /User approved one pending pi-automode action \(pending id p1, tool bash\)[\s\S]*tool input: "bash rm x"[\s\S]*not a user instruction/);
+	assert.match(sent[0].c, /User approved one pending pi-automode action \(pending id p1, tool bash\)[\s\S]*not a user instruction[\s\S]*tool input: "bash rm x"/);
 });
 
 test("Jev block queues pending with skip/continue/list reason, status shows count, restores on reload", async () => {
