@@ -20,6 +20,7 @@ const EXTENSION_SOURCE = realpathSync(
 export function createFakePi() {
 	const handlers = new Map<string, Handler[]>();
 	const commands = new Map<string, { handler: Handler }>();
+	const shortcuts = new Map<string, { handler: Handler }>();
 	const tools = new Map<string, {
 		execute: (...args: any[]) => any;
 		sourceInfo: { path: string };
@@ -35,6 +36,9 @@ export function createFakePi() {
 		},
 		registerCommand(name: string, command: { handler: Handler }) {
 			commands.set(name, command);
+		},
+		registerShortcut(shortcut: string, options: { handler: Handler }) {
+			shortcuts.set(shortcut, options);
 		},
 		registerTool(tool: {
 			name: string;
@@ -67,6 +71,7 @@ export function createFakePi() {
 		pi,
 		entries,
 		commands,
+		shortcuts,
 		tools,
 		async emit(event: string, payload: any, ctx: any) {
 			let lastResult: unknown;

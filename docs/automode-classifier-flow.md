@@ -445,6 +445,6 @@ The classifier flow can be inspected or changed through slash commands:
 /automode model provider/model-id
 ```
 
-`/auto-mode` is an alias.
+`/am` is an alias, and `ctrl+shift+m` toggles auto mode for the current session in interactive sessions.
 
 `/automode off` disables the whole flow for the current session. `/automode on` re-enables it. `/automode model` saves the classifier model to `~/.pi/agent/extensions/pi-automode/config.json`.

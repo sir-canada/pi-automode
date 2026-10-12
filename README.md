@@ -38,6 +38,7 @@ pi -e ./extensions/auto-mode.ts
 /automode status    # current state, rules, and classifier
 /automode on        # re-enable for this session
 /automode off       # disable for this session
+/automode toggle    # flip enablement for this session
 /automode reload    # reload config from disk
 /automode reset     # reset denial counters only
 /automode defaults  # print the built-in rule lists
@@ -47,7 +48,7 @@ pi -e ./extensions/auto-mode.ts
 /automode model provider/model-id # save classifier model to ~/.pi/agent/extensions/pi-automode/config.json
 ```
 
-`/auto-mode` is an alias.
+`/am` is an alias for `/automode`. In interactive sessions, `ctrl+shift+m` toggles auto mode for the current session. Terminals without Kitty keyboard protocol support cannot report `ctrl+shift+m`, so the shortcut stays inert there; run `/hotkeys` to verify.
 
 ## Agent diagnostics
 

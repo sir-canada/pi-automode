@@ -228,6 +228,8 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
     };
     let loadedContext = "";
     let globalConfigNoticeShown = false;
+    // Parent-state inheritance: internal, read-only, synchronous query.
+    let unsubscribeEnabledQuery: (() => void) | undefined;
 
     function effectiveConfig(): EffectiveConfig {
       return {
@@ -257,6 +259,27 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
           ? ctx.ui.theme.fg("accent", text)
           : ctx.ui.theme.fg("dim", text),
       );
+      // Keep the latest block visible even while the agent continues.
+      // Widgets are TUI-only; RPC retains the existing warning notification.
+      // Plain text avoids stale theme colors. Strip control characters from
+      // policy/model text before putting it in a persistent terminal widget.
+      if (ctx.mode === "tui") {
+        const denial = state.recentDenials.at(-1);
+        ctx.ui.setWidget(
+          "pi-automode-block",
+          denial
+            ? [
+              `Auto mode blocked ${denial.toolName} (${state.blockedActions} blocked)`
+                .replace(/[\u0000-\u001f\u007f-\u009f]/g, " "),
+              truncateMiddle(
+                denial.reason.replace(/[\u0000-\u001f\u007f-\u009f]/g, " "),
+                240,
+              ),
+              "/automode denials: details | /automode reset: dismiss and reset counters",
+            ]
+            : undefined,
+        );
+      }
     }
 
     function inspectAutomode(
@@ -413,6 +436,19 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       config = loadResult.config;
       configDiagnostics = loadResult.diagnostics;
       state = restoreState(ctx);
+      unsubscribeEnabledQuery?.();
+      // Subscribe only after binding: excluded extensions must not answer.
+      unsubscribeEnabledQuery = pi.events?.on("pi-automode:get-enabled", (raw) => {
+        const request = raw as {
+          sessionId?: string;
+          reply?: (enabled: boolean) => void;
+        } | undefined;
+        if (
+          request?.sessionId !== ctx.sessionManager.getSessionId() ||
+          typeof request?.reply !== "function"
+        ) return;
+        request.reply(effectiveConfig().enabled);
+      });
       if (
         ctx.hasUI &&
         globalConfig.notification &&
@@ -425,6 +461,11 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         globalConfigNoticeShown = true;
       }
       updateUi(ctx);
+    });
+
+    pi.on("session_shutdown", () => {
+      unsubscribeEnabledQuery?.();
+      unsubscribeEnabledQuery = undefined;
     });
 
     pi.on("before_agent_start", (event) => {
@@ -797,6 +838,22 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       },
     });
 
+    function sessionAutoModeEnabled(): boolean {
+      return state.enabledOverride ?? config.enabled;
+    }
+
+    function applySessionEnabled(enabled: boolean, ctx: ExtensionContext): void {
+      state.enabledOverride = enabled;
+      persist();
+      updateUi(ctx);
+      ctx.ui.notify(
+        enabled
+          ? "pi-automode enabled for this session"
+          : "pi-automode disabled for this session",
+        enabled ? "info" : "warning",
+      );
+    }
+
     async function handleAutomodeCommand(
       args: string,
       ctx: ExtensionCommandContext,
@@ -812,17 +869,15 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         return;
       }
       if (command === "on") {
-        state.enabledOverride = true;
-        persist();
-        updateUi(ctx);
-        ctx.ui.notify("pi-automode enabled for this session", "info");
+        applySessionEnabled(true, ctx);
         return;
       }
       if (command === "off") {
-        state.enabledOverride = false;
-        persist();
-        updateUi(ctx);
-        ctx.ui.notify("pi-automode disabled for this session", "warning");
+        applySessionEnabled(false, ctx);
+        return;
+      }
+      if (command === "toggle") {
+        applySessionEnabled(!sessionAutoModeEnabled(), ctx);
         return;
       }
       if (command === "reload") {
@@ -953,20 +1008,29 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       }
 
       ctx.ui.notify(
-        "Usage: /automode [status|on|off|reload|reset|defaults|config|denials|model [provider/id]]",
+        "Usage: /automode [status|on|off|toggle|reload|reset|defaults|config|denials|model [provider/id]]",
         "error",
       );
     }
 
     pi.registerCommand("automode", {
       description:
-        "Control pi-automode: status, on, off, reload, reset, defaults, config, denials, model",
+        "Control pi-automode: status, on, off, toggle, reload, reset, defaults, config, denials, model",
       handler: handleAutomodeCommand,
     });
 
-    pi.registerCommand("auto-mode", {
+    pi.registerCommand("am", {
       description: "Alias for /automode",
       handler: handleAutomodeCommand,
+    });
+
+    // ctrl+m is unusable: pi-tui matches the raw enter byte (\r) against
+    // ctrl+m, so the shortcut would fire on every submit.
+    pi.registerShortcut("ctrl+shift+m", {
+      description: "Toggle pi-automode for this session",
+      handler: (ctx) => {
+        applySessionEnabled(!sessionAutoModeEnabled(), ctx);
+      },
     });
   };
 }
