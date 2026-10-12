@@ -277,3 +277,26 @@ for (const mode of ["gate", "gate+block", "replace"] as const) {
 		});
 	}
 }
+
+test("hook: exactly the 3 prior actions reach the Jev state", async () => {
+	const fake = createFakePi();
+	const states: string[] = [];
+	const c: JevClient = {
+		async decide(s: string) { states.push(s); return { model: "jev-1.13", reportedModel: "jev-1.13", answers: answers(0.5, 0.5), durationMs: 1 }; },
+		async probe() { return { model: "jev-1.13", reportedModel: "jev-1.13", answers: {}, durationMs: 1 }; },
+		reportedModel: undefined,
+	};
+	createPiAutomode({
+		loadConfig: () => baseConfig({ decisionModel: settings("gate") }),
+		classifyAction: async () => ({ decision: "allow", tier: "none", reason: "ok" }),
+		createDecisionModelClient: () => c,
+	})(fake.pi);
+	const ctx = createFakeCtx(fake.entries);
+	await fake.emit("session_start", { type: "session_start" }, ctx);
+	for (const n of [1, 2, 3, 4, 5]) {
+		await fake.emit("tool_call", { type: "tool_call", toolName: "bash", input: { command: `echo step${n}` } }, ctx);
+	}
+	const last = states.at(-1)!;
+	assert.doesNotMatch(last, /echo step1/);
+	for (const n of [2, 3, 4]) assert.match(last, new RegExp(`echo step${n}`));
+});
