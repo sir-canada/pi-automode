@@ -266,7 +266,9 @@ export async function runPreflight(input: PreflightInput): Promise<PreflightResu
     scores[name] = a.value;
   }
   const clarityAnswer = answers.scope_clarity;
-  const clarity = clarityAnswer && clarityAnswer.type === "score" ? clarityAnswer.value : 3;
+  // A missing/malformed scope_clarity is a shape problem, not "vague":
+  // fall back to the editable template (plan §1.5), never the LLM draft.
+  const clarity = clarityAnswer && clarityAnswer.type === "score" ? clarityAnswer.value : 0;
   const maxRisk = Math.max(...Object.values(scores));
   const thresholds = settings.preflight.thresholds;
   const flagged = PREFLIGHT_RISK_NAMES.filter((n) => scores[n]! >= thresholds.prompt).map(grantRiskName);
