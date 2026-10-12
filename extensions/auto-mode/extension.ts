@@ -81,6 +81,10 @@ import {
   runGrantAwareDecision,
 } from "./grants.ts";
 import { logJevCall } from "./log.ts";
+import { emitIssue } from "./issues.ts";
+import { setIssueRecorder } from "./grants.ts";
+import { setPendingIssueRecorder } from "./pending.ts";
+import { setPreflightIssueRecorder } from "./preflight.ts";
 import {
   addPending,
   approvePending,
@@ -571,7 +575,42 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
           createDecisionModelClient;
         const client = createClient(config.decisionModel);
         decisionModelClient = client;
-        void client.probe().catch(() => undefined);
+        void client.probe().catch((error: unknown) => {
+          emitIssue(pi.events, {
+            severity: "error",
+            kind: "failure",
+            title: "pi-automode decision model probe failed",
+            body: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }
+      setPendingIssueRecorder((issue) => emitIssue(pi.events, {
+        severity: "warning",
+        kind: "blocked",
+        title: `pi-automode blocked ${issue.item.tool}`,
+        body: `${issue.item.actionSummary}: ${issue.item.reason} (added to /automode pending)`,
+      }));
+      setIssueRecorder((issue) => emitIssue(pi.events, {
+        severity: "error",
+        kind: "failure",
+        title: "pi-automode allow-tier scope check failed",
+        body: issue.error,
+      }));
+      setPreflightIssueRecorder((issue) => emitIssue(pi.events, {
+        severity: "error",
+        kind: "failure",
+        title: issue.kind === "draft-failure"
+          ? "pi-automode grant scope draft failed"
+          : "pi-automode preflight check failed",
+        body: issue.error,
+      }));
+      if (configDiagnostics.length > 0) {
+        emitIssue(pi.events, {
+          severity: "error",
+          kind: "config",
+          title: "pi-automode config problem",
+          body: configDiagnostics.join("; "),
+        });
       }
       unsubscribeEnabledQuery?.();
       // Subscribe only after binding: excluded extensions must not answer.
@@ -598,6 +637,17 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         globalConfigNoticeShown = true;
       }
       updateUi(ctx);
+    });
+
+    pi.on("agent_settled", () => {
+      const open = openPending(state.pending ?? []);
+      if (open.length === 0) return;
+      emitIssue(pi.events, {
+        severity: "warning",
+        kind: "stale-pending",
+        title: "pi-automode approvals pending",
+        body: `${open.length} pending approval(s) outstanding; latest: ${open[open.length - 1].tool} ${open[open.length - 1].actionSummary}. Run /automode pending`,
+      });
     });
 
     pi.on("session_shutdown", () => {
@@ -1060,6 +1110,14 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
           ...(jevOutcome.error ? { error: jevOutcome.error } : {}),
         };
         if (jevOutcome.result !== "llm") logJevCall(logCtx.logger, jevLog);
+        if (!jevOutcome.ok) {
+          emitIssue(pi.events, {
+            severity: "error",
+            kind: "failure",
+            title: `pi-automode decision model failed on ${event.toolName}`,
+            body: `${summary}: ${jevOutcome.error ?? jevOutcome.reason}`,
+          });
+        }
         if (jevOutcome.result === "allow") {
           return allow(
             ctx,
