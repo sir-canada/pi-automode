@@ -191,3 +191,31 @@ test("hook: no UI at >= 0.8 injects chat-confirm guidance", async () => {
 	assert.equal(h.dialogs.length, 0);
 	assert.match(r.systemPrompt, /confirm scope first/);
 });
+
+test("hook: cancel blocks every tool_call until the next prompt", async () => {
+	const fake = createFakePi();
+	let n = 0;
+	const c: JevClient = {
+		async decide() { n += 1; return { model: "jev-1.13", reportedModel: "jev-1.13", answers: n === 1 ? answers(0.9) : answers(0.0), durationMs: 1 }; },
+		async probe() { return { model: "jev-1.13", reportedModel: "jev-1.13", answers: {}, durationMs: 1 }; },
+		reportedModel: undefined,
+	};
+	createPiAutomode({
+		loadConfig: () => baseConfig({ decisionModel: settings(), permissionAllow: [] }),
+		classifyAction: async () => ({ decision: "allow", tier: "none", reason: "ok" }),
+		createDecisionModelClient: () => c,
+	})(fake.pi);
+	const ctx: any = createFakeCtx(fake.entries);
+	ctx.abort = () => {};
+	ctx.ui.select = async () => DIALOG_CANCEL;
+	await fake.emit("session_start", { type: "session_start" }, ctx);
+	const start = (prompt: string) => fake.emit("before_agent_start", { prompt, systemPrompt: "base", systemPromptOptions: { contextFiles: [] } }, ctx);
+	const call = () => fake.emit("tool_call", { type: "tool_call", toolName: "bash", input: { command: "echo hi" } }, ctx) as Promise<{ block?: boolean; reason?: string } | undefined>;
+	await start("delete stuff");
+	const blocked = await call();
+	assert.equal(blocked?.block, true);
+	assert.match(blocked?.reason ?? "", /cancelled/);
+	await start("what time is it");
+	const after = await call();
+	assert.notEqual(after?.reason ?? "", blocked?.reason);
+});
