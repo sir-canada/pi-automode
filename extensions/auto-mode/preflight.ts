@@ -317,10 +317,13 @@ export async function runPreflight(input: PreflightInput): Promise<PreflightResu
 
   const ui = ctx.ui!;
   for (;;) {
+    // Strip control characters (C0 except newline, DEL, C1) so prompt or
+    // model-drafted text cannot inject terminal escapes into the dialog.
+    const clean = (s: string) => s.replace(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/g, "");
     const title = [
       `pi-automode: approve risky request (${flagged.join(", ")})`,
-      `Scope: ${scope}`,
-      `Your prompt: "${input.prompt}"`,
+      `Scope${scopeSource === "draft" ? " (model-drafted, review before approving)" : ""}: ${clean(scope)}`,
+      `Your prompt: "${clean(input.prompt)}"`,
     ].join("\n");
     const choice = await ui.select!(title, DIALOG_OPTIONS);
     if (choice === DIALOG_EDIT) {
