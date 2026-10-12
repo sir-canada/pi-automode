@@ -848,6 +848,9 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       }
 
       let askRequiresClassifier = false;
+      // Once the inside-cwd allow tier escalates, permissions.allow must not
+      // re-ask Jev: a second (failing) call would fail open on a flagged action.
+      let allowTierEscalated = false;
       for (const pattern of cfg.permissionAsk) {
         if (
           !matchesToolPattern(
@@ -996,7 +999,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
                 isProtectedPath(policyPath, policyCwd, cfg.protectedPaths);
               if (
                 !askRequiresClassifier && !protectedWrite &&
-                !(await allowTierEscalates(ctx, cfg, event.toolName, input, true, logCtx))
+                !(allowTierEscalated = await allowTierEscalates(ctx, cfg, event.toolName, input, true, logCtx))
               ) {
                 return allow(
                   ctx,
@@ -1044,7 +1047,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
             }
           }
           if (
-            !protectedWrite &&
+            !protectedWrite && !allowTierEscalated &&
             !(await allowTierEscalates(ctx, cfg, event.toolName, input, undefined, logCtx))
           ) {
             return allow(
