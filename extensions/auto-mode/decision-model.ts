@@ -616,6 +616,18 @@ export function parseJevResponse(value: unknown): JevResponse {
         `decision model answer ${name} .value must be a finite number`,
       );
     }
+    if (type === "noul" && (answerValue < 0 || answerValue > 1)) {
+      throw new JevError(
+        "shape",
+        `decision model answer ${name} .value must be within [0, 1]`,
+      );
+    }
+    if (type === "score" && answerValue < 0) {
+      throw new JevError(
+        "shape",
+        `decision model answer ${name} .value must be non-negative`,
+      );
+    }
     parsed[name] = { type: type as "noul" | "score", value: answerValue };
   }
   return { model, answers: parsed };
