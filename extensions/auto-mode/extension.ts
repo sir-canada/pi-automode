@@ -1105,6 +1105,26 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
             hardDeny: cfg.hardDeny,
           },
         }, ctx.signal);
+        // Plan §1.12: an accepted permissions.ask click is the approval. Jev
+        // only blocks when destructive reaches the block threshold; anything
+        // below runs, in every mode. Jev failures keep the mode failure policy.
+        if (askRequiresClassifier && jevOutcome.ok) {
+          const destructive = jevOutcome.answers.destructive;
+          const blockAt = settings.thresholds.destructive.block;
+          if (destructive?.type === "noul" && destructive.value < blockAt) {
+            jevOutcome = {
+              ...jevOutcome,
+              result: "allow",
+              reason: `User approved permissions.ask; decision model destructive ${destructive.value.toFixed(2)} below ${blockAt}`,
+            };
+          } else if (destructive?.type === "noul") {
+            jevOutcome = {
+              ...jevOutcome,
+              result: "block",
+              reason: `Decision model: destructive ${destructive.value.toFixed(2)} at or above ${blockAt} despite permissions.ask approval`,
+            };
+          }
+        }
         const jevLog = {
           decisionId: logCtx.decisionId,
           stage: "per_action" as const,

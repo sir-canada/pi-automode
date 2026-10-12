@@ -214,3 +214,26 @@ test("hook: jev entry logged when log.enabled, including LLM verdict", async () 
 		rmSync(logRoot, { recursive: true, force: true });
 	}
 });
+
+test("hook: accepted permissions.ask is authoritative below destructive block threshold (replace mode, no LLM)", async () => {
+	const h = await setup({
+		mode: "replace",
+		decide: async () => ({ answers: answers(0.3, 0.5) }),
+		config: { permissionAsk: [parseToolPattern("bash(git push*)")!] },
+	});
+	const r = await h.run("git push --force origin main");
+	assert.equal(r?.block, undefined);
+	assert.equal(h.jev.n, 1);
+	assert.equal(h.llm, 0);
+});
+
+test("hook: accepted permissions.ask still blocks at destructive >= block threshold", async () => {
+	const h = await setup({
+		mode: "gate",
+		decide: async () => ({ answers: answers(0.82, 0.1) }),
+		config: { permissionAsk: [parseToolPattern("bash(git push*)")!] },
+	});
+	const r = await h.run("git push --force origin main");
+	assert.equal(r?.block, true);
+	assert.equal(h.llm, 0);
+});
