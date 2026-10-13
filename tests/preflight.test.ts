@@ -135,7 +135,7 @@ test("hook: Jev failure and timeout start normally, no grant, no delay", async (
 	const r = await fail.start("rm everything");
 	assert.match(r.systemPrompt, /Auto Mode Active/);
 	assert.match(await fail.grants(), /No active/);
-	const slow = await setup({ pf: { timeoutMs: 50 }, decide: () => new Promise(() => {}) });
+	const slow = await setup({ pf: { timeoutMs: 50, totalTimeoutMs: 50 }, decide: () => new Promise(() => {}) });
 	const t0 = Date.now();
 	await slow.start("x");
 	assert.ok(Date.now() - t0 < 1000);

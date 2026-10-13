@@ -249,14 +249,16 @@ export async function runPreflight(input: PreflightInput): Promise<PreflightResu
 
   let result;
   try {
+    // Bound by the whole primary+fallback chain, not one endpoint's timeout;
+    // per-endpoint timeouts are applied inside the client.
     result = await withTimeout(
-      (signal) => client.decide(state, questions, { signal, timeoutMs: settings.timeoutMs }),
-      settings.timeoutMs,
+      (signal) => client.decide(state, questions, { signal }),
+      settings.totalTimeoutMs,
     );
   } catch (error) {
     return fail(error instanceof Error ? error.message : String(error));
   }
-  if (result === TIMEOUT) return fail(`preflight timed out after ${settings.timeoutMs}ms`);
+  if (result === TIMEOUT) return fail(`preflight timed out after ${settings.totalTimeoutMs}ms`);
 
   const answers = result.answers;
   const scores: Record<string, number> = {};
