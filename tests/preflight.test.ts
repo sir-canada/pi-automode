@@ -91,7 +91,9 @@ test("selectScopeSource at 1.49/1.5 and five questions", () => {
 	const q = buildPreflightQuestions(settings());
 	assert.deepEqual(Object.keys(q).sort(), ["destructive", "exfiltration", "needs_scope_beyond_ask", "scope_clarity", "security_weakening"]);
 	assert.equal(q.scope_clarity!.type, "score");
-	assert.match(q.scope_clarity!.criteria!, /delete \.\/build/);
+	assert.ok(Array.isArray(q.scope_clarity!.criteria), "score criteria must be an array (strict endpoints reject a string)");
+	assert.equal((q.scope_clarity!.criteria as string[]).length, 4);
+	assert.match((q.scope_clarity!.criteria as string[])[0], /delete \.\/build/);
 });
 
 test("hook: < 0.4 nothing; 0.4-0.8 appends guidance without dialog", async () => {

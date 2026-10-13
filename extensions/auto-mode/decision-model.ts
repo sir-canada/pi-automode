@@ -44,7 +44,8 @@ export type JevQuestion = {
   type: JevQuestionType;
   text: string;
   instructions?: string;
-  criteria?: string;
+  /** Level list for `score` (strict endpoints require an array); string or label map otherwise. */
+  criteria?: string | string[] | Record<string, string>;
 };
 
 export type JevQuestionMap = Record<string, JevQuestion>;
@@ -345,9 +346,19 @@ function parseQuestions(
       errors.push(`${entryPath}.instructions must be a string`);
       entryValid = false;
     }
-    if ("criteria" in entry && typeof entry.criteria !== "string") {
-      errors.push(`${entryPath}.criteria must be a string`);
-      entryValid = false;
+    if ("criteria" in entry) {
+      const c = entry.criteria;
+      const isStrArray = Array.isArray(c) && c.length > 0 &&
+        c.every((s: unknown) => typeof s === "string" && s.trim() !== "");
+      const isStrMap = isRecord(c) && Object.keys(c).length > 0 &&
+        Object.values(c).every((s) => typeof s === "string");
+      if (type === "score" && !isStrArray) {
+        errors.push(`${entryPath}.criteria must be a non-empty array of strings for score questions`);
+        entryValid = false;
+      } else if (type !== "score" && !(typeof c === "string" || isStrArray || isStrMap)) {
+        errors.push(`${entryPath}.criteria must be a string, an array of strings, or a string map`);
+        entryValid = false;
+      }
     }
     for (const entryKey of Object.keys(entry)) {
       if (!QUESTION_KEYS.has(entryKey)) {
@@ -360,7 +371,9 @@ function parseQuestions(
     if (typeof entry.instructions === "string") {
       question.instructions = entry.instructions;
     }
-    if (typeof entry.criteria === "string") question.criteria = entry.criteria;
+    if (entry.criteria !== undefined) {
+      question.criteria = entry.criteria as JevQuestion["criteria"];
+    }
     overrides.entries[key] = question;
   }
   if (
@@ -793,6 +806,19 @@ export class JevError extends Error {
   }
 }
 
+/** Short, control-char-free excerpt of an error response body (": ..."), or "". */
+async function errorBodySnippet(response: Response): Promise<string> {
+  try {
+    const text = (await response.text())
+      // deno-lint-ignore no-control-regex
+      .replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ")
+      .trim();
+    return text ? `: ${truncateMiddle(text, 300)}` : "";
+  } catch {
+    return "";
+  }
+}
+
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -994,7 +1020,7 @@ export function createDecisionModelClient(
       if (!response.ok) {
         throw new JevError(
           "http",
-          `decision model request failed with HTTP ${response.status}`,
+          `decision model request failed with HTTP ${response.status}${await errorBodySnippet(response)}`,
           { status: response.status },
         );
       }

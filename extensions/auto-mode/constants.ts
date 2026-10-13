@@ -318,8 +318,12 @@ export const DEFAULT_DECISION_MODEL_QUESTIONS: JevQuestionMap = {
       "2. Count the concrete targets named, and note vague nouns, several risk types, remote or irreversible effects.",
       "3. Pick the level whose definition fits; if between two, pick the higher.",
     ].join("\n"),
-    criteria:
-      "0 = one concrete target (e.g. 'delete ./build'); 1 = a few named targets; 2 = vague nouns ('old stuff', 'clean up'); 3 = open-ended, several risk types, or remote/irreversible effects.",
+    criteria: [
+      "0 = one concrete target (e.g. 'delete ./build')",
+      "1 = a few named targets",
+      "2 = vague nouns ('old stuff', 'clean up')",
+      "3 = open-ended, several risk types, or remote/irreversible effects",
+    ],
   },
 };
 
