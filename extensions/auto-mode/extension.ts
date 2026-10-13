@@ -35,6 +35,7 @@ import {
 import { deterministicHardDeny } from "./hard-deny.ts";
 import {
   createDecisionModelClient,
+  createFallbackDecisionModelClient,
   resetDecisionModelSession,
   type DecisionModelSettings,
   type JevClient,
@@ -582,7 +583,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       decisionModelClient = undefined;
       if (config.decisionModel?.enabled) {
         const createClient = options.createDecisionModelClient ??
-          createDecisionModelClient;
+          createFallbackDecisionModelClient;
         const client = createClient(config.decisionModel);
         decisionModelClient = client;
         void client.probe().catch((error: unknown) => {

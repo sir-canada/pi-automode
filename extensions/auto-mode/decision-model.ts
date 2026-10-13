@@ -12,6 +12,9 @@ import {
   PROBE_QUESTIONS,
   PROBE_STATE,
 } from "./constants.ts";
+import { readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { hasOwn, truncateMiddle } from "./utils.ts";
 
 // ---------------------------------------------------------------------------
@@ -74,11 +77,27 @@ export type DecisionModelSettings = {
   model: string;
   /** Env var name holding the bearer token; empty means no auth header. */
   apiKeyEnv: string;
+  /** Path ("~" allowed) of a mode-600 file whose first line is the bearer token. Used when apiKeyEnv is unset/empty. */
+  apiKeyFile: string;
   timeoutMs: number;
+  /** Backup endpoints tried in order when the primary fails (any JevError, including an open breaker). */
+  fallbacks: DecisionModelFallback[];
+  /** Upper bound for one decision across primary + fallbacks. */
+  totalTimeoutMs: number;
   thresholds: DecisionModelThresholds;
   preflight: DecisionModelPreflight;
   questions: JevQuestionMap;
 };
+
+export type DecisionModelFallback = {
+  endpoint: string;
+  model: string;
+  apiKeyEnv: string;
+  apiKeyFile: string;
+  timeoutMs: number;
+};
+
+export const DECISION_MODEL_TOTAL_TIMEOUT_MS_DEFAULT = 5000;
 
 /** Raw `autoMode.decisionModel` block as written in a settings file. */
 export type DecisionModelInput = {
@@ -99,6 +118,9 @@ export type DecisionModelInput = {
     draftTimeoutMs?: number;
   };
   questions?: unknown;
+  apiKeyFile?: string;
+  fallbacks?: unknown;
+  totalTimeoutMs?: number;
 };
 
 export const DECISION_MODEL_MODES: readonly DecisionModelMode[] = [
@@ -129,7 +151,10 @@ export const DEFAULT_DECISION_MODEL_SETTINGS: DecisionModelSettings = {
   endpoint: "",
   model: "",
   apiKeyEnv: "",
+  apiKeyFile: "",
   timeoutMs: DECISION_MODEL_TIMEOUT_MS_DEFAULT,
+  fallbacks: [],
+  totalTimeoutMs: DECISION_MODEL_TOTAL_TIMEOUT_MS_DEFAULT,
   thresholds: {
     destructive: { ...DEFAULT_DECISION_MODEL_THRESHOLDS.destructive },
     scope_creep: { ...DEFAULT_DECISION_MODEL_THRESHOLDS.scope_creep },
@@ -166,6 +191,9 @@ export type DecisionModelPatch = {
     draftTimeoutMs?: number;
   };
   questions?: DecisionModelQuestionOverrides;
+  apiKeyFile?: string;
+  fallbacks?: DecisionModelFallback[];
+  totalTimeoutMs?: number;
 };
 
 /**
@@ -190,7 +218,10 @@ const DECISION_MODEL_KEYS = new Set([
   "endpoint",
   "model",
   "apiKeyEnv",
+  "apiKeyFile",
   "timeoutMs",
+  "fallbacks",
+  "totalTimeoutMs",
   "thresholds",
   "preflight",
   "questions",
@@ -395,6 +426,75 @@ function parseDecisionModelPatch(
       errors.push(`${base}.apiKeyEnv must be a non-empty string`);
     }
   }
+  if (hasOwn(value, "apiKeyFile")) {
+    if (typeof value.apiKeyFile === "string" && value.apiKeyFile.trim() !== "") {
+      patch.apiKeyFile = value.apiKeyFile;
+    } else {
+      errors.push(`${base}.apiKeyFile must be a non-empty string`);
+    }
+  }
+  if (hasOwn(value, "totalTimeoutMs")) {
+    if (typeof value.totalTimeoutMs !== "number" || !Number.isInteger(value.totalTimeoutMs)) {
+      errors.push(`${base}.totalTimeoutMs must be an integer`);
+    } else {
+      patch.totalTimeoutMs = clamp(
+        value.totalTimeoutMs,
+        DECISION_MODEL_TIMEOUT_MS_MIN,
+        DECISION_MODEL_TIMEOUT_MS_MAX,
+      );
+    }
+  }
+  if (hasOwn(value, "fallbacks")) {
+    const raw = value.fallbacks;
+    if (!Array.isArray(raw)) {
+      errors.push(`${base}.fallbacks must be an array`);
+    } else {
+      const FALLBACK_KEYS = new Set(["endpoint", "model", "apiKeyEnv", "apiKeyFile", "timeoutMs"]);
+      const list: DecisionModelFallback[] = [];
+      raw.forEach((entry: unknown, i: number) => {
+        const fb = `${base}.fallbacks[${i}]`;
+        if (!isRecord(entry)) {
+          errors.push(`${fb} must be an object`);
+          return;
+        }
+        for (const k of Object.keys(entry)) {
+          if (!FALLBACK_KEYS.has(k)) errors.push(`${fb}: unknown key ${k}`);
+        }
+        if (!isValidEndpoint(entry.endpoint)) {
+          errors.push(`${fb}.endpoint must be an http(s) URL`);
+          return;
+        }
+        if (typeof entry.model !== "string" || entry.model.trim() === "") {
+          errors.push(`${fb}.model must be a non-empty string`);
+          return;
+        }
+        const f: DecisionModelFallback = {
+          endpoint: entry.endpoint,
+          model: entry.model,
+          apiKeyEnv: "",
+          apiKeyFile: "",
+          timeoutMs: DECISION_MODEL_TIMEOUT_MS_DEFAULT,
+        };
+        if (hasOwn(entry, "apiKeyEnv")) {
+          if (typeof entry.apiKeyEnv === "string" && entry.apiKeyEnv.trim() !== "") f.apiKeyEnv = entry.apiKeyEnv;
+          else errors.push(`${fb}.apiKeyEnv must be a non-empty string`);
+        }
+        if (hasOwn(entry, "apiKeyFile")) {
+          if (typeof entry.apiKeyFile === "string" && entry.apiKeyFile.trim() !== "") f.apiKeyFile = entry.apiKeyFile;
+          else errors.push(`${fb}.apiKeyFile must be a non-empty string`);
+        }
+        if (hasOwn(entry, "timeoutMs")) {
+          if (typeof entry.timeoutMs !== "number" || !Number.isInteger(entry.timeoutMs)) {
+            errors.push(`${fb}.timeoutMs must be an integer`);
+          } else {
+            f.timeoutMs = clamp(entry.timeoutMs, DECISION_MODEL_TIMEOUT_MS_MIN, DECISION_MODEL_TIMEOUT_MS_MAX);
+          }
+        }
+        list.push(f);
+      });
+      patch.fallbacks = list;
+    }
+  }
   if (hasOwn(value, "timeoutMs")) {
     if (typeof value.timeoutMs !== "number" || !Number.isInteger(value.timeoutMs)) {
       errors.push(`${base}.timeoutMs must be an integer`);
@@ -549,7 +649,10 @@ export function applyDecisionModelPatch(
     endpoint: patch.endpoint ?? current.endpoint,
     model: patch.model ?? current.model,
     apiKeyEnv: patch.apiKeyEnv ?? current.apiKeyEnv,
+    apiKeyFile: patch.apiKeyFile ?? current.apiKeyFile,
     timeoutMs: patch.timeoutMs ?? current.timeoutMs,
+    fallbacks: patch.fallbacks ?? current.fallbacks,
+    totalTimeoutMs: patch.totalTimeoutMs ?? current.totalTimeoutMs,
     thresholds: {
       destructive: { ...current.thresholds.destructive, ...thresholds?.destructive },
       scope_creep: { ...current.thresholds.scope_creep, ...thresholds?.scope_creep },
@@ -671,6 +774,7 @@ export type JevErrorKind =
   | "parse"
   | "shape"
   | "network"
+  | "auth"
   | "unavailable";
 
 export class JevError extends Error {
@@ -858,9 +962,7 @@ export function createDecisionModelClient(
       const headers: Record<string, string> = {
         "content-type": "application/json",
       };
-      const apiKey = settings.apiKeyEnv
-        ? process.env[settings.apiKeyEnv]
-        : undefined;
+      const apiKey = resolveApiKey(settings);
       if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 
       let response: Response;
@@ -954,6 +1056,98 @@ export function createDecisionModelClient(
 // ---------------------------------------------------------------------------
 // Per-action questions, state assembly, threshold bands (plan §1.3/§1.7/§1.9)
 // ---------------------------------------------------------------------------
+
+/**
+ * Resolve the bearer token: env var first (when named and set), then the
+ * key file. The key file must be mode 600 (no group/world bits); otherwise
+ * an `auth` JevError is thrown and the endpoint is treated as failed. The
+ * key value itself never appears in any error message.
+ */
+export function resolveApiKey(
+  settings: { apiKeyEnv: string; apiKeyFile: string },
+  env: NodeJS.ProcessEnv = process.env,
+  fs: { statSync: typeof statSync; readFileSync: typeof readFileSync } = { statSync, readFileSync },
+): string | undefined {
+  if (settings.apiKeyEnv) {
+    const fromEnv = env[settings.apiKeyEnv];
+    if (fromEnv) return fromEnv;
+  }
+  if (!settings.apiKeyFile) return undefined;
+  const path = settings.apiKeyFile.startsWith("~/")
+    ? join(homedir(), settings.apiKeyFile.slice(2))
+    : settings.apiKeyFile;
+  let mode: number;
+  try {
+    mode = fs.statSync(path).mode & 0o777;
+  } catch (error) {
+    throw new JevError("auth", `decision model key file unreadable: ${path}`, { cause: error });
+  }
+  if (mode & 0o077) {
+    throw new JevError(
+      "auth",
+      `decision model key file ${path} must not be group/world readable (mode ${mode.toString(8)}); run chmod 600`,
+    );
+  }
+  const key = fs.readFileSync(path, "utf8").split(/\r?\n/)[0]?.trim();
+  if (!key) throw new JevError("auth", `decision model key file ${path} is empty`);
+  return key;
+}
+
+/**
+ * Primary + fallbacks client. Each endpoint gets its own breaker; endpoints
+ * are tried in order and any JevError (including an open breaker) moves on
+ * to the next. The whole decision is bounded by `settings.totalTimeoutMs`.
+ * Caller cancellation never retries. With no fallbacks this is exactly the
+ * single-endpoint client.
+ */
+export function createFallbackDecisionModelClient(
+  settings: DecisionModelSettings,
+  deps: JevClientDeps = {},
+): JevClient {
+  const targets: DecisionModelSettings[] = [
+    settings,
+    ...settings.fallbacks.map((f) => ({ ...settings, ...f, fallbacks: [] })),
+  ];
+  const clients = targets.map((t) => createDecisionModelClient(t, deps));
+  if (clients.length === 1) return clients[0];
+  const now = deps.now ?? (() => Date.now());
+  let last: JevClient = clients[0];
+
+  async function run(
+    fn: (client: JevClient, opts: JevRequestOptions) => Promise<JevDecisionResult>,
+    opts: JevRequestOptions | undefined,
+  ): Promise<JevDecisionResult> {
+    const started = now();
+    let lastError: unknown;
+    for (let i = 0; i < clients.length; i += 1) {
+      const remaining = settings.totalTimeoutMs - (now() - started);
+      if (remaining <= 0) break;
+      const perCall = Math.min(opts?.timeoutMs ?? targets[i].timeoutMs, remaining);
+      try {
+        const result = await fn(clients[i], { ...opts, timeoutMs: perCall });
+        last = clients[i];
+        return result;
+      } catch (error) {
+        if (opts?.signal?.aborted) throw error;
+        lastError = error;
+      }
+    }
+    throw lastError instanceof JevError
+      ? lastError
+      : new JevError("unavailable", "decision model: no endpoint answered within totalTimeoutMs");
+  }
+
+  return {
+    decide: (state, questions, opts) => run((c, o) => c.decide(state, questions, o), opts),
+    probe: (opts) => run((c, o) => c.probe(o), opts),
+    get reportedModel() {
+      return last.reportedModel;
+    },
+    get breaker() {
+      return clients[0].breaker;
+    },
+  };
+}
 
 export const RISK_QUESTION_NAMES = ["destructive", "scope_creep"] as const;
 export type RiskQuestionName = (typeof RISK_QUESTION_NAMES)[number];

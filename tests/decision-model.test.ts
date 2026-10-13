@@ -215,7 +215,12 @@ test("shared project decisionModel is rejected with a diagnostic", () => {
 			JSON.stringify({ autoMode: { decisionModel: validBlock() } }),
 		);
 
-		const { config, diagnostics } = loadEffectiveConfigWithDiagnostics(project, true);
+		// Isolate from the real global config, which may enable decisionModel.
+		const { config, diagnostics } = loadEffectiveConfigWithDiagnostics(
+			project,
+			true,
+			join(project, "no-global-config.json"),
+		);
 
 		assert.equal(config.decisionModel, undefined);
 		assert.equal(
