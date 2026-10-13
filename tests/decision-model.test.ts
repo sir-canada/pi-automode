@@ -468,7 +468,8 @@ test("decide POSTs model, state, and questions to the configured endpoint", asyn
 	const body = JSON.parse(String(calls[0].init?.body));
 	assert.equal(body.model, "jev-1.13");
 	assert.equal(body.state, SAMPLE_STATE);
-	assert.deepEqual(body.questions, SAMPLE_QUESTIONS);
+	// Wire shape: question text is folded into instructions (strict endpoints reject `text`).
+	assert.deepEqual(body.questions, { destructive: { type: "noul", instructions: "Is this destructive?" } });
 });
 
 test("decide surfaces timeouts as a timeout error", async () => {
@@ -676,7 +677,8 @@ test("probe sends one fixed known-safe noul question", async () => {
 	assert.equal(names.length, 1);
 	const question = body.questions[names[0]];
 	assert.equal(question.type, "noul");
-	assert.match(question.text, /README/i);
+	assert.equal(question.text, undefined);
+	assert.match(question.instructions, /README/i);
 	assert.match(question.instructions, /1\./);
 	assert.equal(result.reportedModel, "jev-1.13");
 	assert.equal(result.answers.probe_readme_read.value, 0.05);

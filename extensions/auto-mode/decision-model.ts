@@ -46,6 +46,26 @@ export type JevQuestion = {
 
 export type JevQuestionMap = Record<string, JevQuestion>;
 
+/**
+ * Wire shape: strict Jev endpoints accept only `type`, `instructions` and
+ * `criteria` per question and reject extra keys with HTTP 400. Fold the
+ * question `text` into `instructions`.
+ */
+export function toWireQuestions(
+  questions: JevQuestionMap,
+): Record<string, { type: JevQuestionType; instructions: string; criteria?: unknown }> {
+  const out: Record<string, { type: JevQuestionType; instructions: string; criteria?: unknown }> = {};
+  for (const [name, q] of Object.entries(questions)) {
+    const instructions = [q.text, q.instructions].filter((s) => s && s.trim()).join("\n");
+    out[name] = {
+      type: q.type,
+      instructions,
+      ...(q.criteria === undefined ? {} : { criteria: q.criteria }),
+    };
+  }
+  return out;
+}
+
 /** Resolved, validated `autoMode.decisionModel` settings with all defaults applied. */
 export type DecisionModelSettings = {
   enabled: boolean;
@@ -848,7 +868,7 @@ export function createDecisionModelClient(
         response = await doFetch(settings.endpoint, {
           method: "POST",
           headers,
-          body: JSON.stringify({ model: settings.model, state, questions }),
+          body: JSON.stringify({ model: settings.model, state, questions: toWireQuestions(questions) }),
           signal: controller.signal,
         });
       } catch (error) {

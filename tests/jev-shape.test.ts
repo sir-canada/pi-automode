@@ -28,3 +28,10 @@ test("real Jev wire shape: value keyed by type name", () => {
   assert.equal(r.answers.c.value, 0.84);
   assert.throws(() => parseJevResponse({ model: "m", answers: { a: { type: "noul", noul: 1.5 } } }), (e) => e instanceof JevError && e.kind === "shape");
 });
+
+import { toWireQuestions } from "../extensions/auto-mode/decision-model.ts";
+test("wire questions carry only type/instructions/criteria (text folded in)", () => {
+  const w = toWireQuestions({ a: { type: "noul", text: "Q?", instructions: "1. rule" } } as never);
+  assert.deepEqual(Object.keys(w.a).sort(), ["instructions", "type"]);
+  assert.equal(w.a.instructions, "Q?\n1. rule");
+});
