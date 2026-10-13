@@ -1012,7 +1012,11 @@ export function createDecisionModelClient(
 
       recordSuccess();
       reportedModel = parsed.model;
-      if (parsed.model !== settings.model && !session.modelMismatchWarned) {
+      // Providers append tier suffixes (e.g. jev-1.13 -> jev-1.13-free); only
+      // a different base model is a real mismatch.
+      const sameModel = parsed.model === settings.model ||
+        parsed.model.startsWith(`${settings.model}-`);
+      if (!sameModel && !session.modelMismatchWarned) {
         session.modelMismatchWarned = true;
         warn(
           `pi-automode: decision model mismatch: configured ${settings.model}, endpoint reports ${parsed.model}`,

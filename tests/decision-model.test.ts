@@ -620,7 +620,7 @@ test("model mismatch warns once per session and records the reported model", asy
 	resetDecisionModelSession();
 	const warnings: string[] = [];
 	const { fetch } = recordingFetch(() =>
-		jsonResponse({ model: "jev-1.13-free", answers: {} }));
+		jsonResponse({ model: "clef", answers: {} }));
 	const client = createDecisionModelClient(testSettings(), {
 		fetch,
 		warn: (message) => warnings.push(message),
@@ -630,12 +630,26 @@ test("model mismatch warns once per session and records the reported model", asy
 	await client.decide(SAMPLE_STATE, SAMPLE_QUESTIONS);
 	assert.equal(warnings.length, 1);
 	assert.match(warnings[0], /jev-1\.13/);
-	assert.match(warnings[0], /jev-1\.13-free/);
-	assert.equal(client.reportedModel, "jev-1.13-free");
+	assert.match(warnings[0], /clef/);
+	assert.equal(client.reportedModel, "clef");
 
 	resetDecisionModelSession();
 	await client.decide(SAMPLE_STATE, SAMPLE_QUESTIONS);
 	assert.equal(warnings.length, 2, "a new session warns again");
+});
+
+test("a provider tier suffix (jev-1.13-free) does not warn", async () => {
+	resetDecisionModelSession();
+	const warnings: string[] = [];
+	const { fetch } = recordingFetch(() =>
+		jsonResponse({ model: "jev-1.13-free", answers: {} }));
+	const client = createDecisionModelClient(testSettings(), {
+		fetch,
+		warn: (message) => warnings.push(message),
+	});
+	await client.decide(SAMPLE_STATE, SAMPLE_QUESTIONS);
+	assert.deepEqual(warnings, []);
+	assert.equal(client.reportedModel, "jev-1.13-free");
 });
 
 test("a matching reported model does not warn", async () => {
